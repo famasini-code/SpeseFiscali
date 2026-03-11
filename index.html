@@ -60,6 +60,12 @@ const KEY_DRIVE_CONNECTED='sf:drive_connected';
 const imgKey=id=>`sf:img:${id}`;
 const PAYERS=["Fabio","Melissa"];
 const FAMILY=["Fabio","Melissa","Alessandro","Leonardo"];
+const CF_MAP={
+  "MSNFBA79P07C573G":{name:"Fabio",    type:"pagante"},
+  "PNTMSS82S50C573K":{name:"Melissa",  type:"pagante"},
+  "MSNLSN09S04H294X":{name:"Alessandro",type:"riferimento"},
+  "MSNLRD15H16H294Q":{name:"Leonardo", type:"riferimento"},
+};
 
 /* ── PALETTE ── */
 const C={
@@ -320,8 +326,9 @@ async function analyzeFile(base64,mediaType,apiKey){
     body:JSON.stringify({model:"claude-opus-4-5",max_tokens:800,messages:[{role:"user",content:[
       block,
       {type:"text",text:`Analizza questo documento italiano (ricevuta/scontrino/fattura).
+Cerca nel documento i codici fiscali: MSNFBA79P07C573G=Fabio, PNTMSS82S50C573K=Melissa, MSNLSN09S04H294X=Alessandro, MSNLRD15H16H294Q=Leonardo.
 Rispondi SOLO con JSON valido, niente markdown:
-{"beneficiario":"nome esercente/struttura","importo":0.00,"data":"YYYY-MM-DD","descrizione":"max 60 car","categoria":"salute|casa|istruzione|famiglia|veterinaria|erogazioni"}
+{"beneficiario":"nome esercente/struttura","importo":0.00,"data":"YYYY-MM-DD","descrizione":"max 60 car","categoria":"salute|casa|istruzione|famiglia|veterinaria|erogazioni","cf_trovato":"codice fiscale trovato o null"}
 Categorie: salute=farmaci/visite/ticket/occhiali, casa=affitto/mutuo/ristrutturazione, istruzione=scuole/università/sport, famiglia=assicurazioni/contributi/funebri, veterinaria=cure animali, erogazioni=onlus/donazioni.
 Se non leggibile usa null per stringhe e 0 per importo.`}
     ]}]})
@@ -504,10 +511,16 @@ function App(){
     setStep("loading");setErr(null);
     try{
       const r=await analyzeFile(fileData.base64,fileData.mediaType,apiKey);
+      const cfUpper=(r.cf_trovato||"").toUpperCase().trim();
+      const cfMatch=CF_MAP[cfUpper]||null;
+      const detectedPagante=cfMatch?.type==="pagante"?cfMatch.name:null;
+      const detectedRiferimento=cfMatch?cfMatch.name:null;
       setForm({beneficiario:r.beneficiario||"",importo:r.importo??"",
         data:r.data||new Date().toISOString().slice(0,10),
         descrizione:r.descrizione||"",categoria:r.categoria||"salute",
-        pagante:PAYERS[0],riferimento:FAMILY[0]});
+        pagante:detectedPagante||PAYERS[0],
+        riferimento:detectedRiferimento||FAMILY[0],
+        _cfRilevato:cfMatch?{name:cfMatch.name,type:cfMatch.type}:null});
       setStep("review");
     }catch(e){
       setErr("Errore AI: "+e.message);
@@ -1081,7 +1094,14 @@ function ReviewForm({form,setForm,fileData,payers,onSave,onCancel,err}){
   const valid=form.beneficiario&&form.importo&&Number(form.importo)>0;
   return(
     <div style={{animation:"fadeUp .25s ease"}}>
-      {err&&<div style={{background:C.dangerLight,border:`1px solid ${C.danger}30`,
+      {form._cfRilevato&&<div style={{background:C.successLight,border:`1px solid ${C.success}30`,
+        borderRadius:12,padding:"10px 14px",marginBottom:14,
+        display:"flex",alignItems:"center",gap:8,fontSize:12,color:C.success,fontWeight:"500"}}>
+        <span style={{fontSize:16}}>🪪</span>
+        {form._cfRilevato.type==="pagante"
+          ?<span>Codice fiscale rilevato — pagante: <strong>{form._cfRilevato.name}</strong></span>
+          :<span>Codice fiscale rilevato — spesa per: <strong>{form._cfRilevato.name}</strong></span>}
+      </div>}
         borderRadius:12,padding:"12px 16px",marginBottom:14,fontSize:12,color:C.danger,fontWeight:"500"}}>
         ⚠️ {err}
       </div>}
