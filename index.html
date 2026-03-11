@@ -41,6 +41,8 @@ const KEY_APIKEY='sf:anthropic_key';
 const KEY_LS='sf:expenses';
 const KEY_DRIVE_CONNECTED='sf:drive_connected';
 const imgKey=id=>`sf:img:${id}`;
+const PAYERS=["Fabio","Melissa"];
+const FAMILY=["Fabio","Melissa","Alessandro","Leonardo"];
 
 /* ─────────────────────────────────────────────────────────────────────────────
    DESIGN
@@ -51,10 +53,12 @@ const C={bg:"#0e1a12",surface:"#162019",card:"#1c2b20",border:"#243329",
   medica:"#e8917a",istruz:"#7aade8",vet:"#7ae896",altro:"#d4b86a"};
 
 const CATS=[
-  {id:"medica",label:"Medica / Sanitaria",icon:"⚕️",color:C.medica},
-  {id:"istruzione",label:"Istruzione",icon:"📚",color:C.istruz},
-  {id:"veterinaria",label:"Veterinaria",icon:"🐾",color:C.vet},
-  {id:"altro",label:"Altro",icon:"📎",color:C.altro}
+  {id:"salute",      label:"Salute",              icon:"⚕️",  color:"#e8917a"},
+  {id:"casa",        label:"Casa",                icon:"🏠",  color:"#a8c87a"},
+  {id:"istruzione",  label:"Istruzione",          icon:"📚",  color:"#7aade8"},
+  {id:"famiglia",    label:"Famiglia",            icon:"👨‍👩‍👧",  color:"#d4b86a"},
+  {id:"veterinaria", label:"Veterinaria",         icon:"🐾",  color:"#7ae896"},
+  {id:"erogazioni",  label:"Erogazioni Liberali", icon:"❤️",  color:"#e87ab8"},
 ];
 
 const fmt=n=>Number(n).toLocaleString("it-IT",{style:"currency",currency:"EUR"});
@@ -265,12 +269,13 @@ async function analyzeFile(base64,mediaType,apiKey){
     :{type:"image",source:{type:"base64",media_type:mediaType,data:base64}};
   const res=await fetch("https://api.anthropic.com/v1/messages",{
     method:"POST",
-    headers:{"Content-Type":"application/json","x-api-key":apiKey,"anthropic-version":"2023-06-01"},
+    headers:{"Content-Type":"application/json","x-api-key":apiKey,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
     body:JSON.stringify({model:"claude-opus-4-5",max_tokens:800,messages:[{role:"user",content:[
       block,
       {type:"text",text:`Analizza questo documento italiano (ricevuta/scontrino/fattura).
 Rispondi SOLO con JSON valido, niente markdown:
-{"beneficiario":"nome","importo":0.00,"data":"YYYY-MM-DD","descrizione":"max 60 car","categoria":"medica|istruzione|veterinaria|altro"}
+{"beneficiario":"nome esercente/struttura","importo":0.00,"data":"YYYY-MM-DD","descrizione":"max 60 car","categoria":"salute|casa|istruzione|famiglia|veterinaria|erogazioni"}
+Categorie: salute=farmaci/visite/ticket/occhiali, casa=affitto/mutuo/ristrutturazione, istruzione=scuole/università/sport, famiglia=assicurazioni/contributi/funebri, veterinaria=cure animali, erogazioni=onlus/donazioni.
 Se non leggibile usa null per stringhe e 0 per importo.`}
     ]}]})
   });
@@ -286,7 +291,7 @@ Se non leggibile usa null per stringhe e 0 per importo.`}
 function exportExcel(expenses,year){
   const rows=expenses.map(e=>({
     "Data":fmtDate(e.data),"Beneficiario":e.beneficiario,"Descrizione":e.descrizione,
-    "Categoria":catLabel(e.categoria),"Pagante":e.pagante,
+    "Categoria":catLabel(e.categoria),"Pagante":e.pagante,"Per chi":e.riferimento||e.pagante,
     "Tipo doc.":e.docType==="application/pdf"?"PDF":e.hasDoc?"Immagine":"—",
     "Importo €":Number(e.importo)
   }));
@@ -305,17 +310,17 @@ function exportExcel(expenses,year){
   XLSX.writeFile(wb,`SpeseFiscali_${year}.xlsx`);
 }
 
-function exportPDF(expenses,year,payers){
+function exportPDF(expenses,year){
   const byCat={};
   CATS.forEach(c=>{byCat[c.id]=expenses.filter(e=>e.categoria===c.id);});
   const totale=expenses.reduce((s,e)=>s+Number(e.importo),0);
   const sections=CATS.map(c=>{
     if(!byCat[c.id].length)return"";
     const tot=byCat[c.id].reduce((s,e)=>s+Number(e.importo),0);
-    const rows=byCat[c.id].map(e=>`<tr><td>${fmtDate(e.data)}</td><td>${e.beneficiario||"—"}</td><td>${e.descrizione||"—"}</td><td>${e.pagante}</td><td style="text-align:right;font-weight:600">${fmt(e.importo)}</td></tr>`).join("");
-    return`<div class="sec"><h3>${c.icon} ${c.label}</h3><table><thead><tr><th>Data</th><th>Beneficiario</th><th>Descrizione</th><th>Pagante</th><th>Importo</th></tr></thead><tbody>${rows}</tbody><tfoot><tr><td colspan="4" style="text-align:right;font-weight:700">Totale</td><td style="text-align:right;font-weight:700">${fmt(tot)}</td></tr></tfoot></table></div>`;
+    const rows=byCat[c.id].map(e=>`<tr><td>${fmtDate(e.data)}</td><td>${e.beneficiario||"—"}</td><td>${e.descrizione||"—"}</td><td>${e.pagante}</td><td>${e.riferimento||e.pagante}</td><td style="text-align:right;font-weight:600">${fmt(e.importo)}</td></tr>`).join("");
+    return`<div class="sec"><h3>${c.icon} ${c.label}</h3><table><thead><tr><th>Data</th><th>Beneficiario</th><th>Descrizione</th><th>Pagante</th><th>Per chi</th><th>Importo</th></tr></thead><tbody>${rows}</tbody><tfoot><tr><td colspan="5" style="text-align:right;font-weight:700">Totale</td><td style="text-align:right;font-weight:700">${fmt(tot)}</td></tr></tfoot></table></div>`;
   }).join("");
-  const html=`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Spese Fiscali ${year}</title><style>body{font-family:Georgia,serif;max-width:920px;margin:40px auto;color:#1a2a1e}h1{font-size:26px;border-bottom:2px solid #1a2a1e;padding-bottom:8px}h2{font-size:12px;color:#666;font-weight:normal;letter-spacing:.1em;text-transform:uppercase}h3{font-size:15px;margin:28px 0 6px}table{width:100%;border-collapse:collapse;font-size:12px}th{text-align:left;padding:6px 8px;background:#f0ead8;border-bottom:2px solid #1a2a1e;font-size:10px;letter-spacing:.08em;text-transform:uppercase}td{padding:6px 8px;border-bottom:1px solid #ddd}tfoot td{background:#f8f5ef;font-size:13px}.sec{page-break-inside:avoid}.summary{margin-top:40px;border-top:2px solid #1a2a1e;padding-top:20px}.total{font-size:18px;font-weight:700;text-align:right}@media print{body{margin:20px}}</style></head><body><h1>Archivio Spese Fiscali — ${year}</h1><h2>Contribuenti: ${payers.join(" · ")} · ${new Date().toLocaleDateString("it-IT")}</h2>${sections}<div class="summary"><h3>Riepilogo</h3><table><thead><tr><th>Categoria</th><th>N.</th><th style="text-align:right">Totale</th></tr></thead><tbody>${CATS.map(c=>`<tr><td>${c.icon} ${c.label}</td><td>${byCat[c.id].length}</td><td style="text-align:right">${fmt(byCat[c.id].reduce((s,e)=>s+Number(e.importo),0))}</td></tr>`).join("")}</tbody></table><p class="total">TOTALE: ${fmt(totale)}</p></div></body></html>`;
+  const html=`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Spese Fiscali ${year}</title><style>body{font-family:Georgia,serif;max-width:960px;margin:40px auto;color:#1a2a1e}h1{font-size:26px;border-bottom:2px solid #1a2a1e;padding-bottom:8px}h2{font-size:12px;color:#666;font-weight:normal;letter-spacing:.1em;text-transform:uppercase}h3{font-size:15px;margin:28px 0 6px}table{width:100%;border-collapse:collapse;font-size:12px}th{text-align:left;padding:6px 8px;background:#f0ead8;border-bottom:2px solid #1a2a1e;font-size:10px;letter-spacing:.08em;text-transform:uppercase}td{padding:6px 8px;border-bottom:1px solid #ddd}tfoot td{background:#f8f5ef;font-size:13px}.sec{page-break-inside:avoid}.summary{margin-top:40px;border-top:2px solid #1a2a1e;padding-top:20px}.total{font-size:18px;font-weight:700;text-align:right}@media print{body{margin:20px}}</style></head><body><h1>Archivio Spese Fiscali — ${year}</h1><h2>Famiglia: ${FAMILY.join(" · ")} · ${new Date().toLocaleDateString("it-IT")}</h2>${sections}<div class="summary"><h3>Riepilogo</h3><table><thead><tr><th>Categoria</th><th>N.</th><th style="text-align:right">Totale</th></tr></thead><tbody>${CATS.map(c=>`<tr><td>${c.icon} ${c.label}</td><td>${byCat[c.id].length}</td><td style="text-align:right">${fmt(byCat[c.id].reduce((s,e)=>s+Number(e.importo),0))}</td></tr>`).join("")}</tbody></table><p class="total">TOTALE: ${fmt(totale)}</p></div></body></html>`;
   const w=window.open("","_blank");
   w.document.write(html);w.document.close();
   setTimeout(()=>w.print(),600);
@@ -386,8 +391,9 @@ function App(){
   const[filterYear,setFilterYear]=useState(new Date().getFullYear().toString());
   const[filterCat,setFilterCat]=useState("all");
   const[filterPayer,setFilterPayer]=useState("all");
+  const[filterRef,setFilterRef]=useState("all");
   const fileRef=useRef();
-  const payers=["Io","Partner"];
+  const payers=PAYERS;
   const curYear=new Date().getFullYear().toString();
 
   const showToast=useCallback((msg,type="ok")=>{
@@ -464,12 +470,13 @@ function App(){
       const r=await analyzeFile(fileData.base64,fileData.mediaType,apiKey);
       setForm({beneficiario:r.beneficiario||"",importo:r.importo??"",
         data:r.data||new Date().toISOString().slice(0,10),
-        descrizione:r.descrizione||"",categoria:r.categoria||"altro",pagante:payers[0]});
+        descrizione:r.descrizione||"",categoria:r.categoria||"salute",
+        pagante:PAYERS[0],riferimento:FAMILY[0]});
       setStep("review");
     }catch(e){
       setErr("Errore AI: "+e.message);
       setForm({beneficiario:"",importo:"",data:new Date().toISOString().slice(0,10),
-        descrizione:"",categoria:"altro",pagante:payers[0]});
+        descrizione:"",categoria:"salute",pagante:PAYERS[0],riferimento:FAMILY[0]});
       setStep("review");
     }
   };
@@ -517,7 +524,7 @@ function App(){
   const years=[...new Set(expenses.map(e=>e.data?.slice(0,4)))].filter(Boolean).sort().reverse();
   const filtered=expenses.filter(e=>{
     const y=e.data?.slice(0,4)||curYear;
-    return(filterYear==="all"||y===filterYear)&&(filterCat==="all"||e.categoria===filterCat)&&(filterPayer==="all"||e.pagante===filterPayer);
+    return(filterYear==="all"||y===filterYear)&&(filterCat==="all"||e.categoria===filterCat)&&(filterPayer==="all"||e.pagante===filterPayer)&&(filterRef==="all"||e.riferimento===filterRef);
   });
   const total=filtered.reduce((s,e)=>s+Number(e.importo),0);
   const totalYear=expenses.filter(e=>e.data?.startsWith(curYear)).reduce((s,e)=>s+Number(e.importo),0);
@@ -573,7 +580,7 @@ function App(){
               <button style={{...s.btn(),marginBottom:8}} onClick={()=>fileRef.current.click()}>📷 &nbsp;Scatta foto / Carica file</button>
               <button style={s.btn("ghost")} onClick={()=>{setStep("review");setFileData(null);
                 setForm({beneficiario:"",importo:"",data:new Date().toISOString().slice(0,10),
-                  descrizione:"",categoria:"altro",pagante:payers[0]});}}>
+                  descrizione:"",categoria:"salute",pagante:PAYERS[0],riferimento:FAMILY[0]});}}>
                 ✏️ &nbsp;Inserimento manuale
               </button>
             </div>
@@ -585,7 +592,7 @@ function App(){
                   <span style={{fontSize:20}}>{catIcon(e.categoria)}</span>
                   <div style={{flex:1,minWidth:0}}>
                     <div style={{fontSize:13,fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{e.beneficiario||"—"}</div>
-                    <div style={{fontSize:10,color:C.muted,marginTop:1}}>{fmtDate(e.data)} · {e.pagante}{e.hasDoc&&<span style={{marginLeft:5,color:C.gold}}>{e.docType==="application/pdf"?"📄":"🖼"}</span>}</div>
+                    <div style={{fontSize:10,color:C.muted,marginTop:1}}>{fmtDate(e.data)} · {e.pagante}{e.riferimento&&e.riferimento!==e.pagante&&<span style={{color:C.info}}> → {e.riferimento}</span>}{e.hasDoc&&<span style={{marginLeft:5,color:C.gold}}>{e.docType==="application/pdf"?"📄":"🖼"}</span>}</div>
                   </div>
                   <div style={{fontFamily:"'Courier New',monospace",color:C.gold,fontSize:14,whiteSpace:"nowrap"}}>{fmt(e.importo)}</div>
                 </div>
@@ -629,11 +636,18 @@ function App(){
               {CATS.map(c=><span key={c.id} style={s.chip(filterCat===c.id,c.color)} onClick={()=>setFilterCat(filterCat===c.id?"all":c.id)}>{c.icon} {c.label.split("/")[0].trim()}</span>)}
             </div>
           </div>
-          <div style={{marginBottom:14}}>
+          <div style={{marginBottom:10}}>
             <p style={s.label}>Pagante</p>
             <div>
               <span style={s.chip(filterPayer==="all",C.muted)} onClick={()=>setFilterPayer("all")}>Tutti</span>
-              {payers.map(p=><span key={p} style={s.chip(filterPayer===p,C.gold)} onClick={()=>setFilterPayer(filterPayer===p?"all":p)}>{p}</span>)}
+              {PAYERS.map(p=><span key={p} style={s.chip(filterPayer===p,C.gold)} onClick={()=>setFilterPayer(filterPayer===p?"all":p)}>{p}</span>)}
+            </div>
+          </div>
+          <div style={{marginBottom:14}}>
+            <p style={s.label}>Per chi</p>
+            <div>
+              <span style={s.chip(filterRef==="all",C.muted)} onClick={()=>setFilterRef("all")}>Tutti</span>
+              {FAMILY.map(f=><span key={f} style={s.chip(filterRef===f,C.info)} onClick={()=>setFilterRef(filterRef===f?"all":f)}>{f}</span>)}
             </div>
           </div>
           <div style={{...s.card,background:C.goldFade,border:`1px solid ${C.gold}44`,marginBottom:14}}>
@@ -650,7 +664,7 @@ function App(){
                   <span style={{fontSize:20}}>{catIcon(e.categoria)}</span>
                   <div>
                     <div style={{fontSize:13,fontWeight:600}}>{e.beneficiario||"—"}</div>
-                    <div style={{fontSize:10,color:C.muted,marginTop:1}}>{fmtDate(e.data)} · {e.pagante}{e.hasDoc&&<span style={{marginLeft:5,color:C.gold}}>{e.docType==="application/pdf"?"📄":"🖼"}</span>}</div>
+                    <div style={{fontSize:10,color:C.muted,marginTop:1}}>{fmtDate(e.data)} · {e.pagante}{e.riferimento&&e.riferimento!==e.pagante&&<span style={{color:C.info}}> → {e.riferimento}</span>}{e.hasDoc&&<span style={{marginLeft:5,color:C.gold}}>{e.docType==="application/pdf"?"📄":"🖼"}</span>}</div>
                   </div>
                 </div>
                 <div style={{textAlign:"right"}}>
@@ -669,7 +683,7 @@ function App(){
         )}
 
         {/* ESPORTA */}
-        {page==="esporta"&&<ExportPage expenses={expenses} payers={payers} driveConnected={driveConnected} driveSyncing={driveSyncing}/>}
+        {page==="esporta"&&<ExportPage expenses={expenses} driveConnected={driveConnected} driveSyncing={driveSyncing}/>}
 
         {/* IMPOSTAZIONI */}
         {page==="impostazioni"&&(
@@ -763,7 +777,7 @@ function DetailView({expense,onBack,onDelete,driveConnected}){
             <div style={{fontFamily:"'Courier New',monospace",color:C.gold,fontSize:21,fontWeight:700}}>{fmt(expense.importo)}</div>
           </div>
         </div>
-        {[["Data",fmtDate(expense.data)],["Pagante",expense.pagante],["Descrizione",expense.descrizione||"—"]].map(([k,v])=>(
+        {[["Data",fmtDate(expense.data)],["Pagante",expense.pagante],["Per chi",expense.riferimento||expense.pagante],["Descrizione",expense.descrizione||"—"]].map(([k,v])=>(
           <div key={k} style={{display:"flex",justifyContent:"space-between",paddingBottom:7,marginBottom:7,borderBottom:`1px solid ${C.border}`,alignItems:"flex-start"}}>
             <span style={{...s.label,margin:0}}>{k}</span>
             <span style={{fontSize:12,textAlign:"right",maxWidth:"60%"}}>{v}</span>
@@ -793,16 +807,31 @@ function ReviewForm({form,setForm,fileData,payers,onSave,onCancel,err}){
         <div style={{flex:1}}><label style={s.label}>Data</label><input style={s.input} type="date" value={form.data||""} onChange={e=>upd("data",e.target.value)}/></div>
       </div>
       <div style={{marginBottom:11}}><label style={s.label}>Descrizione</label><input style={s.input} value={form.descrizione||""} placeholder="Breve descrizione" onChange={e=>upd("descrizione",e.target.value)}/></div>
-      <div style={{marginBottom:11}}><label style={s.label}>Categoria</label><div>{CATS.map(c=><span key={c.id} style={s.chip(form.categoria===c.id,c.color)} onClick={()=>upd("categoria",c.id)}>{c.icon} {c.label.split("/")[0].trim()}</span>)}</div></div>
-      <div style={{marginBottom:18}}>
+      <div style={{marginBottom:11}}>
+        <label style={s.label}>Categoria</label>
+        <div>{CATS.map(c=><span key={c.id} style={s.chip(form.categoria===c.id,c.color)} onClick={()=>upd("categoria",c.id)}>{c.icon} {c.label.split(" ")[0]}</span>)}</div>
+      </div>
+      <div style={{marginBottom:11}}>
         <label style={s.label}>Pagante</label>
         <div style={{display:"flex",gap:8}}>
-          {payers.map(p=><button key={p} style={{flex:1,padding:"10px",
+          {PAYERS.map(p=><button key={p} style={{flex:1,padding:"10px",
             border:`1px solid ${form.pagante===p?C.gold:C.border}`,borderRadius:8,
             background:form.pagante===p?C.goldFade:"transparent",
             color:form.pagante===p?C.gold:C.muted,
             fontFamily:"'Courier New',monospace",fontSize:13,cursor:"pointer",transition:"all .2s"}}
             onClick={()=>upd("pagante",p)}>{p}</button>)}
+        </div>
+      </div>
+      <div style={{marginBottom:18}}>
+        <label style={s.label}>Per chi è la spesa</label>
+        <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+          {FAMILY.map(f=><button key={f} style={{
+            padding:"8px 14px",
+            border:`1px solid ${form.riferimento===f?C.info:C.border}`,borderRadius:8,
+            background:form.riferimento===f?"#7aade822":"transparent",
+            color:form.riferimento===f?C.info:C.muted,
+            fontFamily:"'Courier New',monospace",fontSize:12,cursor:"pointer",transition:"all .2s"}}
+            onClick={()=>upd("riferimento",f)}>{f}</button>)}
         </div>
       </div>
       <button style={{...s.btn(),opacity:valid?1:.4}} onClick={valid?onSave:undefined} disabled={!valid}>✅ &nbsp;Salva spesa</button>
@@ -814,12 +843,13 @@ function ReviewForm({form,setForm,fileData,payers,onSave,onCancel,err}){
 /* ─────────────────────────────────────────────────────────────────────────────
    EXPORT PAGE
 ───────────────────────────────────────────────────────────────────────────── */
-function ExportPage({expenses,payers,driveConnected,driveSyncing}){
+function ExportPage({expenses,driveConnected,driveSyncing}){
   const curYear=new Date().getFullYear().toString();
   const years=[...new Set(expenses.map(e=>e.data?.slice(0,4)).filter(Boolean))].sort().reverse();
   const[year,setYear]=useState(years[0]||curYear);
   const byYear=expenses.filter(e=>e.data?.startsWith(year));
   const total=byYear.reduce((s,e)=>s+Number(e.importo),0);
+  const missingCats=CATS.filter(c=>!byYear.some(e=>e.categoria===c.id));
   return(
     <>
       <div style={{...s.card,border:`1px solid ${driveConnected?C.success+"44":C.border}`,
@@ -838,6 +868,26 @@ function ExportPage({expenses,payers,driveConnected,driveSyncing}){
       </div>
       <p style={s.label}>Anno</p>
       <div style={{marginBottom:18}}>{[...new Set([curYear,...years])].map(y=><span key={y} style={s.chip(year===y,C.gold)} onClick={()=>setYear(y)}>{y}</span>)}</div>
+
+      {/* ── Alert categorie mancanti ── */}
+      {byYear.length>0&&missingCats.length>0&&(
+        <div style={{background:"#2a1e0a",border:`1px solid ${C.gold}55`,borderRadius:11,
+          padding:"13px 14px",marginBottom:16}}>
+          <p style={{...s.label,color:C.gold,margin:"0 0 8px"}}>⚠️ Categorie senza spese — hai qualcosa da aggiungere?</p>
+          <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
+            {missingCats.map(c=>(
+              <span key={c.id} style={{
+                display:"inline-flex",alignItems:"center",gap:5,
+                padding:"5px 11px",borderRadius:20,fontSize:11,
+                border:`1px solid ${c.color}55`,background:c.color+"18",
+                color:c.color,fontFamily:"'Courier New',monospace"}}>
+                {c.icon} {c.label}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div style={{...s.card,marginBottom:18}}>
         <p style={{...s.label,marginBottom:12}}>Riepilogo {year}</p>
         {CATS.map(c=>{
@@ -854,7 +904,7 @@ function ExportPage({expenses,payers,driveConnected,driveSyncing}){
         </div>}
       </div>
       <button style={{...s.btn(),marginBottom:8,opacity:byYear.length?1:.4}} onClick={byYear.length?()=>exportExcel(byYear,year):undefined}>📊 &nbsp;Esporta Excel (.xlsx)</button>
-      <button style={{...s.btn("secondary"),opacity:byYear.length?1:.4}} onClick={byYear.length?()=>exportPDF(byYear,year,payers):undefined}>🖨️ &nbsp;Genera PDF archivio</button>
+      <button style={{...s.btn("secondary"),opacity:byYear.length?1:.4}} onClick={byYear.length?()=>exportPDF(byYear,year):undefined}>🖨️ &nbsp;Genera PDF archivio</button>
     </>
   );
 }
