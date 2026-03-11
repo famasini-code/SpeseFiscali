@@ -1102,6 +1102,7 @@ function ReviewForm({form,setForm,fileData,payers,onSave,onCancel,err}){
           ?<span>Codice fiscale rilevato — pagante: <strong>{form._cfRilevato.name}</strong></span>
           :<span>Codice fiscale rilevato — spesa per: <strong>{form._cfRilevato.name}</strong></span>}
       </div>}
+      {err&&<div style={{background:C.dangerLight,border:`1px solid ${C.danger}30`,
         borderRadius:12,padding:"12px 16px",marginBottom:14,fontSize:12,color:C.danger,fontWeight:"500"}}>
         ⚠️ {err}
       </div>}
