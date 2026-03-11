@@ -198,13 +198,19 @@ class DriveService{
     this.tokenClient=null;this.accessToken=null;this.folderId=null;
     this.dataFileId=null;this.onTokenChange=null;this.tokenExpiresAt=0;
   }
-  init(onTokenChange){
+  init(onTokenChange,onSilentFail){
     this.onTokenChange=onTokenChange;
+    this.onSilentFail=onSilentFail;
     if(typeof google==="undefined")return;
     this.tokenClient=google.accounts.oauth2.initTokenClient({
       client_id:CLIENT_ID,scope:SCOPES,
       callback:resp=>{
-        if(resp.error){console.error("Drive auth error:",resp);return;}
+        if(resp.error){
+          // Silent auth failed — clear stored flag, notify UI
+          if(this.onSilentFail)this.onSilentFail(resp.error);
+          LS.del(KEY_DRIVE_CONNECTED);
+          return;
+        }
         this.accessToken=resp.access_token;
         this.tokenExpiresAt=Date.now()+3500*1000;
         LS.set(KEY_DRIVE_CONNECTED,"1");
@@ -213,7 +219,12 @@ class DriveService{
     });
   }
   get connected(){return!!this.accessToken&&Date.now()<this.tokenExpiresAt;}
-  requestAuth(silent=false){if(!this.tokenClient)return;this.tokenClient.requestAccessToken({prompt:silent?"":"select_account"});}
+  requestAuth(silent=false){
+    if(!this.tokenClient)return;
+    // prompt:"none" = truly silent (no UI), fails with error if interaction needed
+    // prompt:"select_account" = always show account picker
+    this.tokenClient.requestAccessToken({prompt:silent?"none":"select_account"});
+  }
   async fetch(url,opts={}){
     if(!this.connected)throw new Error("Non connesso a Drive");
     const res=await fetch(url,{...opts,headers:{Authorization:`Bearer ${this.accessToken}`,...(opts.headers||{})}});
@@ -422,6 +433,7 @@ function App(){
   const[detail,setDetail]=useState(null);
   const[driveConnected,setDriveConnected]=useState(false);
   const[driveSyncing,setDriveSyncing]=useState(false);
+  const[driveWasConnected,setDriveWasConnected]=useState(()=>!!LS.get(KEY_DRIVE_CONNECTED));
   const[filterYear,setFilterYear]=useState(new Date().getFullYear().toString());
   const[filterCat,setFilterCat]=useState("all");
   const[filterPayer,setFilterPayer]=useState("all");
@@ -437,10 +449,17 @@ function App(){
   useEffect(()=>{
     const check=()=>{
       if(typeof google!=="undefined"){
-        drive.init(connected=>{
-          setDriveConnected(connected);
-          if(connected&&LS.get(KEY_DRIVE_CONNECTED))syncFromDrive();
-        });
+        drive.init(
+          connected=>{
+            setDriveConnected(connected);
+            if(connected){setDriveWasConnected(true);syncFromDrive();}
+          },
+          ()=>{
+            // Silent auth failed — token expired, show reconnect banner
+            setDriveConnected(false);
+            setDriveWasConnected(true); // keep banner visible so user can tap
+          }
+        );
         if(LS.get(KEY_DRIVE_CONNECTED))drive.requestAuth(true);
       }else setTimeout(check,300);
     };
@@ -478,7 +497,7 @@ function App(){
     const base64=await toBase64(file);
     const dataUrl=isPdf?null:await toDataUrl(file);
     setFileData({base64,mediaType:file.type,dataUrl,isPdf});
-    setStep("preview");e.target.value="";
+    setStep(isPdf?"preview":"edit");e.target.value="";
   };
 
   const analyze=async()=>{
@@ -569,7 +588,23 @@ function App(){
         </div>
       </div>
 
-      {/* ── PAGE CONTENT ── */}
+      {/* ── DRIVE RECONNECT BANNER ── */}
+      {driveWasConnected&&!driveConnected&&(
+        <div style={{background:"#FFFBEB",borderBottom:`1px solid #FDE68A`,
+          padding:"10px 20px",display:"flex",alignItems:"center",justifyContent:"space-between",
+          animation:"slideDown .3s ease"}}>
+          <div style={{display:"flex",alignItems:"center",gap:8}}>
+            <span style={{fontSize:15}}>☁️</span>
+            <span style={{fontSize:12,color:"#92400E",fontWeight:"500"}}>Drive disconnesso</span>
+          </div>
+          <button onClick={()=>drive.requestAuth(false)}
+            style={{fontSize:11,fontWeight:"600",color:"#92400E",background:"#FEF3C7",
+              border:"1px solid #FDE68A",borderRadius:20,padding:"5px 14px",cursor:"pointer",
+              fontFamily:"'DM Sans',sans-serif"}}>
+            Riconnetti
+          </button>
+        </div>
+      )}
       <div style={s.page}>
 
         {/* REGISTRA */}
@@ -628,6 +663,18 @@ function App(){
               ))}
             </>}
           </>}
+
+          {step==="edit"&&fileData&&(
+            <ImageEditor
+              dataUrl={fileData.dataUrl}
+              onConfirm={(newDataUrl)=>{
+                const b64=newDataUrl.split(",")[1];
+                setFileData(f=>({...f,dataUrl:newDataUrl,base64:b64}));
+                setStep("preview");
+              }}
+              onCancel={()=>{setStep("idle");setFileData(null);}}
+            />
+          )}
 
           {step==="preview"&&fileData&&<>
             <p style={s.label}>Documento caricato</p>
@@ -754,7 +801,7 @@ function App(){
           <ImpostazioniPage
             apiKey={apiKey} driveConnected={driveConnected} driveSyncing={driveSyncing}
             onConnectDrive={()=>drive.requestAuth(false)}
-            onDisconnectDrive={()=>{drive.disconnect();setDriveConnected(false);}}
+            onDisconnectDrive={()=>{drive.disconnect();setDriveConnected(false);setDriveWasConnected(false);}}
             onSyncDrive={syncFromDrive}
             onResetApiKey={()=>{LS.del(KEY_APIKEY);setApiKey(null);}}
             expenseCount={expenses.length}/>
@@ -854,6 +901,176 @@ function DetailView({expense,onBack,onDelete,driveConnected}){
         onClick={downloadDoc}>⬇️ &nbsp;Scarica {doc.isPdf?"PDF":"immagine"}</button>}
       <button className="btn-ghost" style={{...s.btn("danger"),marginTop:4}}
         onClick={()=>onDelete(expense.id)}>🗑 &nbsp;Elimina spesa</button>
+    </div>
+  );
+}
+
+/* ── IMAGE EDITOR ── */
+function ImageEditor({dataUrl,onConfirm,onCancel}){
+  const canvasRef=useRef();
+  const containerRef=useRef();
+  const imgRef=useRef(new Image());
+  const[rotation,setRotation]=useState(0);
+  const[cropMode,setCropMode]=useState(false);
+  const[cropRect,setCropRect]=useState(null);
+  const[dragging,setDragging]=useState(false);
+  const[dragStart,setDragStart]=useState(null);
+  const[canvasSize,setCanvasSize]=useState({w:1,h:1});
+
+  // Draw current image+rotation onto canvas
+  const drawImage=useCallback((rot)=>{
+    const canvas=canvasRef.current;
+    const img=imgRef.current;
+    if(!canvas||!img.naturalWidth)return;
+    const rad=(rot??rotation)*Math.PI/180;
+    const swap=(rot??rotation)%180!==0;
+    const cw=swap?img.naturalHeight:img.naturalWidth;
+    const ch=swap?img.naturalWidth:img.naturalHeight;
+    canvas.width=cw;canvas.height=ch;
+    setCanvasSize({w:cw,h:ch});
+    const ctx=canvas.getContext("2d");
+    ctx.clearRect(0,0,cw,ch);
+    ctx.save();
+    ctx.translate(cw/2,ch/2);
+    ctx.rotate(rad);
+    ctx.drawImage(img,-img.naturalWidth/2,-img.naturalHeight/2);
+    ctx.restore();
+    setCropRect(null);
+  },[rotation]);
+
+  useEffect(()=>{
+    const img=imgRef.current;
+    img.onload=()=>drawImage(0);
+    img.src=dataUrl;
+  },[]);
+
+  const rotate=(deg)=>{
+    const newRot=(rotation+deg+360)%360;
+    setRotation(newRot);
+    drawImage(newRot);
+  };
+
+  // Touch/mouse helpers — coords in canvas pixels
+  const getCanvasPos=(e)=>{
+    const canvas=canvasRef.current;
+    const rect=canvas.getBoundingClientRect();
+    const sx=canvas.width/rect.width;
+    const sy=canvas.height/rect.height;
+    const src=e.touches?e.touches[0]:e;
+    return{x:(src.clientX-rect.left)*sx, y:(src.clientY-rect.top)*sy};
+  };
+
+  const onPointerDown=(e)=>{
+    if(!cropMode)return;
+    e.preventDefault();
+    const pos=getCanvasPos(e);
+    setDragStart(pos);
+    setCropRect({x:pos.x,y:pos.y,w:0,h:0});
+    setDragging(true);
+  };
+  const onPointerMove=(e)=>{
+    if(!dragging||!dragStart)return;
+    e.preventDefault();
+    const pos=getCanvasPos(e);
+    const canvas=canvasRef.current;
+    setCropRect({
+      x:Math.max(0,Math.min(dragStart.x,pos.x)),
+      y:Math.max(0,Math.min(dragStart.y,pos.y)),
+      w:Math.min(Math.abs(pos.x-dragStart.x),canvas.width-Math.min(dragStart.x,pos.x)),
+      h:Math.min(Math.abs(pos.y-dragStart.y),canvas.height-Math.min(dragStart.y,pos.y))
+    });
+  };
+  const onPointerUp=()=>setDragging(false);
+
+  // Overlay crop rect in display coordinates
+  const cropOverlay=()=>{
+    if(!cropRect||!canvasRef.current)return null;
+    const canvas=canvasRef.current;
+    const rect=canvas.getBoundingClientRect();
+    const sx=rect.width/canvas.width;
+    const sy=rect.height/canvas.height;
+    return{
+      left:cropRect.x*sx, top:cropRect.y*sy,
+      width:cropRect.w*sx, height:cropRect.h*sy
+    };
+  };
+
+  const applyAndConfirm=()=>{
+    const canvas=canvasRef.current;
+    if(cropMode&&cropRect&&cropRect.w>20&&cropRect.h>20){
+      const out=document.createElement("canvas");
+      out.width=Math.round(cropRect.w);out.height=Math.round(cropRect.h);
+      out.getContext("2d").drawImage(canvas,
+        Math.round(cropRect.x),Math.round(cropRect.y),
+        Math.round(cropRect.w),Math.round(cropRect.h),
+        0,0,Math.round(cropRect.w),Math.round(cropRect.h));
+      onConfirm(out.toDataURL("image/jpeg",0.92));
+    }else{
+      onConfirm(canvas.toDataURL("image/jpeg",0.92));
+    }
+  };
+
+  const ov=cropOverlay();
+  const hasCrop=cropRect&&cropRect.w>20&&cropRect.h>20;
+
+  return(
+    <div style={{animation:"fadeUp .25s ease"}}>
+      <p style={{...s.label,marginBottom:10}}>Modifica immagine</p>
+
+      {/* Toolbar */}
+      <div style={{display:"flex",gap:8,marginBottom:12,flexWrap:"wrap"}}>
+        <button onClick={()=>rotate(-90)} style={{flex:1,padding:"10px 8px",background:C.card,
+          border:`1.5px solid ${C.border}`,borderRadius:12,cursor:"pointer",fontSize:13,
+          fontWeight:"500",color:C.textSoft,display:"flex",alignItems:"center",
+          justifyContent:"center",gap:6,boxShadow:`0 1px 4px ${C.shadow}`}}>
+          ↺ Ruota sx
+        </button>
+        <button onClick={()=>rotate(90)} style={{flex:1,padding:"10px 8px",background:C.card,
+          border:`1.5px solid ${C.border}`,borderRadius:12,cursor:"pointer",fontSize:13,
+          fontWeight:"500",color:C.textSoft,display:"flex",alignItems:"center",
+          justifyContent:"center",gap:6,boxShadow:`0 1px 4px ${C.shadow}`}}>
+          Ruota dx ↻
+        </button>
+        <button onClick={()=>{setCropMode(m=>!m);if(cropMode)setCropRect(null);}}
+          style={{flex:1,padding:"10px 8px",
+            background:cropMode?C.green:C.card,
+            border:`1.5px solid ${cropMode?C.green:C.border}`,borderRadius:12,
+            cursor:"pointer",fontSize:13,fontWeight:"500",
+            color:cropMode?"#fff":C.textSoft,
+            display:"flex",alignItems:"center",justifyContent:"center",gap:6,
+            boxShadow:`0 1px 4px ${C.shadow}`}}>
+          ✂️ {cropMode?"Annulla ritaglia":"Ritaglia"}
+        </button>
+      </div>
+
+      {cropMode&&<div style={{background:C.infoLight,border:`1px solid ${C.info}30`,
+        borderRadius:10,padding:"8px 12px",marginBottom:10,fontSize:11,color:C.info,fontWeight:"500"}}>
+        Trascina sull'immagine per selezionare l'area da ritagliare
+      </div>}
+
+      {/* Canvas container */}
+      <div ref={containerRef} style={{position:"relative",width:"100%",
+        borderRadius:14,overflow:"hidden",marginBottom:14,
+        boxShadow:`0 4px 20px ${C.shadowMd}`,
+        cursor:cropMode?"crosshair":"default",touchAction:cropMode?"none":"auto"}}>
+        <canvas ref={canvasRef}
+          style={{width:"100%",display:"block",userSelect:"none"}}
+          onMouseDown={onPointerDown} onMouseMove={onPointerMove} onMouseUp={onPointerUp}
+          onTouchStart={onPointerDown} onTouchMove={onPointerMove} onTouchEnd={onPointerUp}/>
+        {/* Dark overlay outside crop rect */}
+        {cropMode&&ov&&hasCrop&&<>
+          <div style={{position:"absolute",inset:0,background:"rgba(0,0,0,.45)",pointerEvents:"none"}}/>
+          <div style={{position:"absolute",
+            left:ov.left,top:ov.top,width:ov.width,height:ov.height,
+            border:"2px solid #fff",boxShadow:"0 0 0 9999px rgba(0,0,0,.45)",
+            pointerEvents:"none",borderRadius:2}}/>
+        </>}
+      </div>
+
+      <button className="btn-primary" style={s.btn()} onClick={applyAndConfirm}>
+        {hasCrop?"✂️ Applica e continua":"✓ Conferma e continua"}
+      </button>
+      <button className="btn-ghost" style={{...s.btn("ghost"),marginTop:8}} onClick={onCancel}>Annulla</button>
     </div>
   );
 }
