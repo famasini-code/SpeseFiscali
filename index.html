@@ -432,7 +432,7 @@ function App(){
   const[toast,setToast]=useState(null);
   const[loading,setLoading]=useState(true);
   const[detail,setDetail]=useState(null);
-  const[cfConfigured,setCfConfigured]=useState(()=>!!(LS.get(KEY_CF_URL)?.value&&LS.get(KEY_CF_SECRET)?.value));
+  const[cfConfigured,setCfConfigured]=useState(()=>!!LS.get(KEY_CF_SECRET)?.value);
   const[cfSyncing,setCfSyncing]=useState(false);
   const[duplicateWarning,setDuplicateWarning]=useState(null); // {suspects:[], onConfirm, onCancel}
   const[filterYear,setFilterYear]=useState(new Date().getFullYear().toString());
