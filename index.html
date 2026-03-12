@@ -303,7 +303,46 @@ class CloudflareService{
 }
 const cfService=new CloudflareService();
  
-/* ── CLAUDE API ── */
+/* ── RULE-BASED CLASSIFIER ── */
+const RULES=[
+  {pat:/farmaci[a]?|parafarmaci[a]?|medicinale|farmaco\b/i,                                    cat:"salute",sub:"farmaci",pri:10},
+  {pat:/ticket\b|asl\b|azienda\s*sanitaria|ssn\b|pronto\s*soccorso|guardia\s*medica/i,         cat:"salute",sub:"ticket_ssn"},
+  {pat:/ottic[ao]\b|occhiali|lenti\s*(a\s*contatto)?/i,                                        cat:"salute",sub:"occhiali"},
+  {pat:/ortopedi|protesi\b|ausilio|plantare|dispositivo\s*medic|apparecchio\s*acustico/i,       cat:"salute",sub:"dispositivi"},
+  {pat:/dentist|odontoiatr|studio\s*dent|implant|ortodonz/i,                                    cat:"salute",sub:"dentista"},
+  {pat:/ricovero|degenza|day\s*hospital|casa\s*di\s*cura/i,                                     cat:"salute",sub:"ricovero"},
+  {pat:/psicolog|psichiatra|psicoterap|counseling/i,                                            cat:"salute",sub:"psicologo"},
+  {pat:/dott\.?\s|dr\.?\s|medico\b|poliambulatorio|ambulatorio|specialist|visita\s*medic|analisi\s*clinic|laboratorio|radiolog|ecografi|cardiolog|dermato|pediatr|ginecolog|fisioter|logopedist|nutrizionist/i, cat:"salute",sub:"visita_spec"},
+  {pat:/veterinar|clinica\s*vet|ambulatorio\s*vet|pet\s*shop\b/i,                              cat:"veterinaria",sub:null},
+  {pat:/univers|ateneo|politecon|politecnico|erasmus/i,                                         cat:"istruzione",sub:"universita"},
+  {pat:/mensa\b|refezione|pasto\s*scolastic/i,                                                  cat:"istruzione",sub:"mensa"},
+  {pat:/scuola|liceo|istituto\s*(scolast|comprensiv|tecnico|profes)|asilo\b|materna\b|elementar|collegio\b|convitto/i, cat:"istruzione",sub:"tasse_scolastiche"},
+  {pat:/palestra|piscina|sport\b|calcio\b|tennis|danza\b|nuoto\b|basket|volley|rugby|judo|karate|atletica|sci\b|yoga|pilates|fitness|centro\s*sport/i, cat:"istruzione",sub:"sport"},
+  {pat:/libreria|cartoleri|libro\b|libri\b|testo\s*scolastic|dispense|materiale\s*didattico/i, cat:"istruzione",sub:"libri"},
+  {pat:/affitto\b|locazione|canone\s*(mensile|locazione)/i,                                     cat:"casa",sub:"affitto"},
+  {pat:/mutuo\b|rata\s*mutuo/i,                                                                 cat:"casa",sub:"mutuo"},
+  {pat:/ristruttur|idraulic|elettricist|muratore|imbianchin|falegnam|piastrellista|impresa\s*edil|manutenzione\s*(casa|appartam|immobile)/i, cat:"casa",sub:"ristrutturazione"},
+  {pat:/enel\b|eni\b|a2a\b|hera\b|fotovoltaic|pannell\s*solar|pompa\s*di\s*calore|caldaia\s*condens|cappotto\s*termic|infissi|serrament|isolamento\s*termic/i, cat:"casa",sub:"risparmio_en"},
+  {pat:/ikea\b|arredamento|bonus\s*mobili/i,                                                    cat:"casa",sub:"bonus_mobili"},
+  {pat:/assicurazione|polizza\b|premio\s*assicurativo/i,                                        cat:"famiglia",sub:"assicurazione"},
+  {pat:/badante|assistente\s*familiare|colf\b|collaboratore\s*domestico/i,                      cat:"famiglia",sub:"badante"},
+  {pat:/onoranze\s*funebri|pompe\s*funebri|cimitero|cremazione/i,                               cat:"famiglia",sub:"funebri"},
+  {pat:/inps\b|contributi?\s*(previdenz|volontari)|fondo\s*pensione|cassa\s*previdenza/i,       cat:"famiglia",sub:"contributi_prev"},
+  {pat:/donazione|onlus\b|ong\b|ngo\b|parrocchia|caritas\b|croce\s*rossa|unicef\b|wwf\b|airc\b|telethon|fondazione/i, cat:"erogazioni",sub:null},
+];
+function classifyExpense(beneficiario="",descrizione=""){
+  const text=`${beneficiario} ${descrizione}`;
+  let best=null,bestPri=0;
+  for(const r of RULES){
+    const pri=r.pri||1;
+    if(r.pat.test(text)&&pri>=bestPri){best=r;bestPri=pri;}
+  }
+  return best
+    ?{categoria:best.cat,sottocategoria:best.sub,confidence:"high"}
+    :{categoria:null,sottocategoria:null,confidence:"low"};
+}
+ 
+/* ── CLAUDE API: estrae solo dati grezzi ── */
 async function analyzeFile(base64,mediaType,apiKey){
   const isPdf=mediaType==="application/pdf";
   const block=isPdf
@@ -313,27 +352,38 @@ async function analyzeFile(base64,mediaType,apiKey){
     method:"POST",
     headers:{"Content-Type":"application/json","x-api-key":apiKey,
       "anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
-    body:JSON.stringify({model:"claude-opus-4-5",max_tokens:800,messages:[{role:"user",content:[
+    body:JSON.stringify({model:"claude-opus-4-5",max_tokens:300,messages:[{role:"user",content:[
       block,
       {type:"text",text:`Analizza questo documento italiano (ricevuta/scontrino/fattura).
-Cerca nel documento i codici fiscali: MSNFBA79P07C573G=Fabio, PNTMSS82S50C573K=Melissa, MSNLSN09S04H294X=Alessandro, MSNLRD15H16H294Q=Leonardo.
+Cerca codici fiscali: MSNFBA79P07C573G=Fabio, PNTMSS82S50C573K=Melissa, MSNLSN09S04H294X=Alessandro, MSNLRD15H16H294Q=Leonardo.
 Rispondi SOLO con JSON valido, niente markdown:
-{"beneficiario":"nome esercente/struttura","importo":0.00,"data":"YYYY-MM-DD","descrizione":"max 60 car","categoria":"salute|casa|istruzione|famiglia|veterinaria|erogazioni","sottocategoria":"id sottocategoria o null","metodo_pagamento":"tracciabile|contanti|null","cf_trovato":"codice fiscale trovato o null"}
-Categorie e sottocategorie:
-- salute: farmaci, visita_spec, ticket_ssn, occhiali, dispositivi, dentista, ricovero, psicologo
-- casa: affitto, mutuo, ristrutturazione, risparmio_en, bonus_mobili
-- istruzione: tasse_scolastiche, mensa, universita, sport, libri
-- famiglia: assicurazione, badante, funebri, contributi_prev
-- veterinaria: (nessuna sottocategoria, usa null)
-- erogazioni: (nessuna sottocategoria, usa null)
-Metodo pagamento: cerca indicazioni di pagamento. Se trovi "PAGAMENTO POS", "VISA", "MASTERCARD", "BANCOMAT", "BONIFICO" o simili usa "tracciabile". Se trovi "CONTANTI" o "CASH" usa "contanti". Se non indicato usa null.
-Se non leggibile usa null per stringhe e 0 per importo.`}
+{"beneficiario":"nome esercente","importo":0.00,"data":"YYYY-MM-DD","descrizione":"max 60 car","metodo_pagamento":"tracciabile|contanti|null","cf_trovato":"codice fiscale o null"}
+Metodo: "tracciabile" se vedi POS/VISA/MASTERCARD/BANCOMAT/BONIFICO, "contanti" se CONTANTI/CASH, altrimenti null.
+Se non leggibile: null per stringhe, 0 per importo.`}
     ]}]})
   });
   if(!res.ok){const e=await res.json();throw new Error(e.error?.message||"Errore API");}
   const data=await res.json();
   const txt=data.content?.find(b=>b.type==="text")?.text||"{}";
   return JSON.parse(txt.replace(/```json|```/g,"").trim());
+}
+ 
+/* ── AI FALLBACK: classifica solo dal testo (Haiku, niente immagine) ── */
+async function classifyWithAI(beneficiario,descrizione,apiKey){
+  try{
+    const res=await fetch("https://api.anthropic.com/v1/messages",{
+      method:"POST",
+      headers:{"Content-Type":"application/json","x-api-key":apiKey,
+        "anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
+      body:JSON.stringify({model:"claude-haiku-4-5-20251001",max_tokens:80,messages:[{role:"user",content:
+        `Categoria spesa fiscale italiana. Beneficiario:"${beneficiario}" Descrizione:"${descrizione}"
+JSON ONLY: {"categoria":"salute|casa|istruzione|famiglia|veterinaria|erogazioni","sottocategoria":"farmaci|visita_spec|ticket_ssn|occhiali|dispositivi|dentista|ricovero|psicologo|affitto|mutuo|ristrutturazione|risparmio_en|bonus_mobili|tasse_scolastiche|mensa|universita|sport|libri|assicurazione|badante|funebri|contributi_prev|null"}`
+      }]})
+    });
+    const data=await res.json();
+    const txt=data.content?.find(b=>b.type==="text")?.text||"{}";
+    return JSON.parse(txt.replace(/```json|```/g,"").trim());
+  }catch{return{categoria:"salute",sottocategoria:null};}
 }
  
 /* ── EXPORT ── */
@@ -514,15 +564,27 @@ function App(){
     const b64=b64Override??fileData?.base64;
     const mt=mtOverride??fileData?.mediaType;
     try{
+      // 1. AI estrae dati grezzi dal documento (senza classificazione)
       const r=await analyzeFile(b64,mt,apiKey);
+      // 2. Classificatore rule-based
+      const cls=classifyExpense(r.beneficiario||"",r.descrizione||"");
+      let categoria=cls.categoria;
+      let sottocategoria=cls.sottocategoria;
+      // 3. Se nessuna regola ha fatto match → fallback AI (Haiku, solo testo, economico)
+      if(cls.confidence==="low"){
+        const aiCls=await classifyWithAI(r.beneficiario||"",r.descrizione||"",apiKey);
+        categoria=aiCls.categoria||"salute";
+        sottocategoria=aiCls.sottocategoria||null;
+      }
+      // 4. CF recognition
       const cfUpper=(r.cf_trovato||"").toUpperCase().trim();
       const cfMatch=CF_MAP[cfUpper]||null;
       const detectedPagante=cfMatch?.type==="pagante"?cfMatch.name:null;
       const detectedRiferimento=cfMatch?cfMatch.name:null;
       setForm({beneficiario:r.beneficiario||"",importo:r.importo??"",
         data:r.data||new Date().toISOString().slice(0,10),
-        descrizione:r.descrizione||"",categoria:r.categoria||"salute",
-        sottocategoria:r.sottocategoria||null,
+        descrizione:r.descrizione||"",
+        categoria, sottocategoria,
         metodo_pagamento:r.metodo_pagamento||null,
         pagante:detectedPagante||PAYERS[0],
         riferimento:detectedRiferimento||FAMILY[0],
