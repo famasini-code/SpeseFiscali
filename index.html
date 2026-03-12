@@ -133,8 +133,12 @@ const SUBCATS={
   // veterinaria e erogazioni: nessuna sottocategoria
 };
  
-const subcatList=catId=>SUBCATS[catId]||[];
-const subcatLabel=(catId,subcatId)=>SUBCATS[catId]?.find(s=>s.id===subcatId)?.label||subcatId||"—";
+const PAYMENT_METHODS=[
+  {id:"tracciabile", label:"Tracciabile", tracciabile:true},
+  {id:"contanti",    label:"Contanti",    tracciabile:false},
+];
+const pmLabel=id=>PAYMENT_METHODS.find(p=>p.id===id)?.label||"—";
+const pmTracciabile=id=>PAYMENT_METHODS.find(p=>p.id===id)?.tracciabile??null;
  
 const fmt=n=>Number(n).toLocaleString("it-IT",{style:"currency",currency:"EUR"});
 const fmtDate=iso=>{if(!iso)return"—";const[y,m,d]=iso.split("-");return`${d}/${m}/${y}`;};
@@ -314,7 +318,7 @@ async function analyzeFile(base64,mediaType,apiKey){
       {type:"text",text:`Analizza questo documento italiano (ricevuta/scontrino/fattura).
 Cerca nel documento i codici fiscali: MSNFBA79P07C573G=Fabio, PNTMSS82S50C573K=Melissa, MSNLSN09S04H294X=Alessandro, MSNLRD15H16H294Q=Leonardo.
 Rispondi SOLO con JSON valido, niente markdown:
-{"beneficiario":"nome esercente/struttura","importo":0.00,"data":"YYYY-MM-DD","descrizione":"max 60 car","categoria":"salute|casa|istruzione|famiglia|veterinaria|erogazioni","sottocategoria":"id sottocategoria o null","cf_trovato":"codice fiscale trovato o null"}
+{"beneficiario":"nome esercente/struttura","importo":0.00,"data":"YYYY-MM-DD","descrizione":"max 60 car","categoria":"salute|casa|istruzione|famiglia|veterinaria|erogazioni","sottocategoria":"id sottocategoria o null","metodo_pagamento":"tracciabile|contanti|null","cf_trovato":"codice fiscale trovato o null"}
 Categorie e sottocategorie:
 - salute: farmaci, visita_spec, ticket_ssn, occhiali, dispositivi, dentista, ricovero, psicologo
 - casa: affitto, mutuo, ristrutturazione, risparmio_en, bonus_mobili
@@ -322,6 +326,7 @@ Categorie e sottocategorie:
 - famiglia: assicurazione, badante, funebri, contributi_prev
 - veterinaria: (nessuna sottocategoria, usa null)
 - erogazioni: (nessuna sottocategoria, usa null)
+Metodo pagamento: cerca indicazioni di pagamento. Se trovi "PAGAMENTO POS", "VISA", "MASTERCARD", "BANCOMAT", "BONIFICO" o simili usa "tracciabile". Se trovi "CONTANTI" o "CASH" usa "contanti". Se non indicato usa null.
 Se non leggibile usa null per stringhe e 0 per importo.`}
     ]}]})
   });
@@ -338,6 +343,8 @@ function exportExcel(expenses,year){
     "Categoria":catLabel(e.categoria),
     "Tipo spesa":e.sottocategoria?subcatLabel(e.categoria,e.sottocategoria):"—",
     "Pagante":e.pagante,"Per chi":e.riferimento||e.pagante,
+    "Pagamento":e.metodo_pagamento?pmLabel(e.metodo_pagamento):"—",
+    "Tracciabile":e.metodo_pagamento?(pmTracciabile(e.metodo_pagamento)?"Sì":"No"):"—",
     "Tipo doc.":e.docType==="application/pdf"?"PDF":e.hasDoc?"Immagine":"—",
     "Importo €":Number(e.importo)
   }));
@@ -349,7 +356,7 @@ function exportExcel(expenses,year){
   const wb=XLSX.utils.book_new();
   const ws1=XLSX.utils.json_to_sheet(rows);
   const ws2=XLSX.utils.json_to_sheet(summary);
-  ws1["!cols"]=[12,28,35,18,18,10,12,10,12].map(w=>({wch:w}));
+  ws1["!cols"]=[12,28,35,18,18,10,12,12,10,10,12].map(w=>({wch:w}));
   ws2["!cols"]=[28,6,12].map(w=>({wch:w}));
   XLSX.utils.book_append_sheet(wb,ws1,`Spese ${year}`);
   XLSX.utils.book_append_sheet(wb,ws2,"Riepilogo");
@@ -502,10 +509,12 @@ function App(){
     setStep(isPdf?"preview":"edit");e.target.value="";
   };
  
-  const analyze=async()=>{
+  const analyze=async(b64Override,mtOverride)=>{
     setStep("loading");setErr(null);
+    const b64=b64Override??fileData?.base64;
+    const mt=mtOverride??fileData?.mediaType;
     try{
-      const r=await analyzeFile(fileData.base64,fileData.mediaType,apiKey);
+      const r=await analyzeFile(b64,mt,apiKey);
       const cfUpper=(r.cf_trovato||"").toUpperCase().trim();
       const cfMatch=CF_MAP[cfUpper]||null;
       const detectedPagante=cfMatch?.type==="pagante"?cfMatch.name:null;
@@ -514,6 +523,7 @@ function App(){
         data:r.data||new Date().toISOString().slice(0,10),
         descrizione:r.descrizione||"",categoria:r.categoria||"salute",
         sottocategoria:r.sottocategoria||null,
+        metodo_pagamento:r.metodo_pagamento||null,
         pagante:detectedPagante||PAYERS[0],
         riferimento:detectedRiferimento||FAMILY[0],
         _cfRilevato:cfMatch?{name:cfMatch.name,type:cfMatch.type}:null});
@@ -521,7 +531,7 @@ function App(){
     }catch(e){
       setErr("Errore AI: "+e.message);
       setForm({beneficiario:"",importo:"",data:new Date().toISOString().slice(0,10),
-        descrizione:"",categoria:"salute",sottocategoria:null,pagante:PAYERS[0],riferimento:FAMILY[0]});
+        descrizione:"",categoria:"salute",sottocategoria:null,metodo_pagamento:null,pagante:PAYERS[0],riferimento:FAMILY[0]});
       setStep("review");
     }
   };
@@ -699,7 +709,7 @@ function App(){
             <button className="btn-ghost" style={{...s.btn("ghost"),marginTop:8}} onClick={()=>{
               setStep("review");setFileData(null);
               setForm({beneficiario:"",importo:"",data:new Date().toISOString().slice(0,10),
-                descrizione:"",categoria:"salute",sottocategoria:null,pagante:PAYERS[0],riferimento:FAMILY[0]});}}>
+                descrizione:"",categoria:"salute",sottocategoria:null,metodo_pagamento:null,pagante:PAYERS[0],riferimento:FAMILY[0]});}}>
               ✏️ &nbsp;Inserimento manuale
             </button>
  
@@ -740,7 +750,7 @@ function App(){
               onConfirm={(newDataUrl)=>{
                 const b64=newDataUrl.split(",")[1];
                 setFileData(f=>({...f,dataUrl:newDataUrl,base64:b64}));
-                setStep("preview");
+                analyze(b64, fileData.mediaType);
               }}
               onCancel={()=>{setStep("idle");setFileData(null);}}
             />
@@ -844,6 +854,11 @@ function App(){
                     {fmtDate(e.data)} · {e.pagante}
                     {e.riferimento&&e.riferimento!==e.pagante&&
                       <span style={{color:C.info}}> → {e.riferimento}</span>}
+                    {e.metodo_pagamento&&<span style={{
+                      marginLeft:5,color:pmTracciabile(e.metodo_pagamento)?C.success:C.danger,
+                      fontWeight:"500"}}>
+                      {pmTracciabile(e.metodo_pagamento)?"💳":"💵"} {pmLabel(e.metodo_pagamento)}
+                    </span>}
                     {e.hasDoc&&<span style={{marginLeft:5,color:C.gold}}>
                       {e.docType==="application/pdf"?"📄":"🖼"}</span>}
                   </div>
@@ -968,6 +983,11 @@ function DetailView({expense,onBack,onDelete}){
  
         {[["Data",fmtDate(expense.data)],["Pagante",expense.pagante],
           ["Per chi",expense.riferimento||expense.pagante],
+          ["Pagamento", expense.metodo_pagamento
+            ?<span style={{color:pmTracciabile(expense.metodo_pagamento)?C.success:C.danger,fontWeight:"600"}}>
+                {pmTracciabile(expense.metodo_pagamento)?"💳":"💵"} {pmLabel(expense.metodo_pagamento)}
+              </span>
+            :"—"],
           ["Descrizione",expense.descrizione||"—"]].map(([k,v])=>(
           <div key={k} style={{display:"flex",justifyContent:"space-between",
             padding:"10px 0",borderTop:`1px solid ${C.border}`,alignItems:"flex-start"}}>
@@ -986,34 +1006,36 @@ function DetailView({expense,onBack,onDelete}){
   );
 }
  
-/* ── IMAGE EDITOR ── */
+/* ── IMAGE EDITOR ── fullscreen modal, crop always-on */
 function ImageEditor({dataUrl,onConfirm,onCancel}){
   const canvasRef=useRef();
-  const containerRef=useRef();
   const imgRef=useRef(new Image());
   const[rotation,setRotation]=useState(0);
-  const[cropMode,setCropMode]=useState(false);
   const[cropRect,setCropRect]=useState(null);
   const[dragging,setDragging]=useState(false);
   const[dragStart,setDragStart]=useState(null);
-  const[canvasSize,setCanvasSize]=useState({w:1,h:1});
+  const[imgReady,setImgReady]=useState(false);
  
-  // Draw current image+rotation onto canvas
+  // Lock body scroll while editor is open
+  useEffect(()=>{
+    const prev=document.body.style.overflow;
+    document.body.style.overflow="hidden";
+    return()=>{document.body.style.overflow=prev;};
+  },[]);
+ 
   const drawImage=useCallback((rot)=>{
     const canvas=canvasRef.current;
     const img=imgRef.current;
     if(!canvas||!img.naturalWidth)return;
-    const rad=(rot??rotation)*Math.PI/180;
-    const swap=(rot??rotation)%180!==0;
+    const r=(rot??rotation);
+    const rad=r*Math.PI/180;
+    const swap=r%180!==0;
     const cw=swap?img.naturalHeight:img.naturalWidth;
     const ch=swap?img.naturalWidth:img.naturalHeight;
     canvas.width=cw;canvas.height=ch;
-    setCanvasSize({w:cw,h:ch});
     const ctx=canvas.getContext("2d");
     ctx.clearRect(0,0,cw,ch);
-    ctx.save();
-    ctx.translate(cw/2,ch/2);
-    ctx.rotate(rad);
+    ctx.save();ctx.translate(cw/2,ch/2);ctx.rotate(rad);
     ctx.drawImage(img,-img.naturalWidth/2,-img.naturalHeight/2);
     ctx.restore();
     setCropRect(null);
@@ -1021,38 +1043,34 @@ function ImageEditor({dataUrl,onConfirm,onCancel}){
  
   useEffect(()=>{
     const img=imgRef.current;
-    img.onload=()=>drawImage(0);
+    img.onload=()=>{drawImage(0);setImgReady(true);};
     img.src=dataUrl;
   },[]);
  
   const rotate=(deg)=>{
-    const newRot=(rotation+deg+360)%360;
-    setRotation(newRot);
-    drawImage(newRot);
+    const nr=(rotation+deg+360)%360;
+    setRotation(nr);drawImage(nr);
   };
  
-  // Touch/mouse helpers — coords in canvas pixels
-  const getCanvasPos=(e)=>{
+  // Canvas coords from touch/mouse event
+  const getPos=(e)=>{
     const canvas=canvasRef.current;
     const rect=canvas.getBoundingClientRect();
     const sx=canvas.width/rect.width;
     const sy=canvas.height/rect.height;
     const src=e.touches?e.touches[0]:e;
-    return{x:(src.clientX-rect.left)*sx, y:(src.clientY-rect.top)*sy};
+    return{x:(src.clientX-rect.left)*sx,y:(src.clientY-rect.top)*sy};
   };
  
-  const onPointerDown=(e)=>{
-    if(!cropMode)return;
+  const onDown=(e)=>{
     e.preventDefault();
-    const pos=getCanvasPos(e);
-    setDragStart(pos);
-    setCropRect({x:pos.x,y:pos.y,w:0,h:0});
-    setDragging(true);
+    const pos=getPos(e);
+    setDragStart(pos);setCropRect({x:pos.x,y:pos.y,w:0,h:0});setDragging(true);
   };
-  const onPointerMove=(e)=>{
+  const onMove=(e)=>{
     if(!dragging||!dragStart)return;
     e.preventDefault();
-    const pos=getCanvasPos(e);
+    const pos=getPos(e);
     const canvas=canvasRef.current;
     setCropRect({
       x:Math.max(0,Math.min(dragStart.x,pos.x)),
@@ -1061,24 +1079,26 @@ function ImageEditor({dataUrl,onConfirm,onCancel}){
       h:Math.min(Math.abs(pos.y-dragStart.y),canvas.height-Math.min(dragStart.y,pos.y))
     });
   };
-  const onPointerUp=()=>setDragging(false);
+  const onUp=()=>setDragging(false);
  
-  // Overlay crop rect in display coordinates
-  const cropOverlay=()=>{
+  // Display-space overlay coords
+  const ov=()=>{
     if(!cropRect||!canvasRef.current)return null;
     const canvas=canvasRef.current;
     const rect=canvas.getBoundingClientRect();
-    const sx=rect.width/canvas.width;
-    const sy=rect.height/canvas.height;
     return{
-      left:cropRect.x*sx, top:cropRect.y*sy,
-      width:cropRect.w*sx, height:cropRect.h*sy
+      left:cropRect.x*(rect.width/canvas.width),
+      top:cropRect.y*(rect.height/canvas.height),
+      width:cropRect.w*(rect.width/canvas.width),
+      height:cropRect.h*(rect.height/canvas.height)
     };
   };
  
-  const applyAndConfirm=()=>{
+  const hasCrop=cropRect&&cropRect.w>20&&cropRect.h>20;
+ 
+  const confirm=()=>{
     const canvas=canvasRef.current;
-    if(cropMode&&cropRect&&cropRect.w>20&&cropRect.h>20){
+    if(hasCrop){
       const out=document.createElement("canvas");
       out.width=Math.round(cropRect.w);out.height=Math.round(cropRect.h);
       out.getContext("2d").drawImage(canvas,
@@ -1091,67 +1111,112 @@ function ImageEditor({dataUrl,onConfirm,onCancel}){
     }
   };
  
-  const ov=cropOverlay();
-  const hasCrop=cropRect&&cropRect.w>20&&cropRect.h>20;
+  const overlay=ov();
  
   return(
-    <div style={{animation:"fadeUp .25s ease"}}>
-      <p style={{...s.label,marginBottom:10}}>Modifica immagine</p>
+    <div style={{position:"fixed",inset:0,zIndex:900,background:"#0D0D0D",
+      display:"flex",flexDirection:"column",animation:"fadeIn .2s ease"}}>
  
-      {/* Toolbar */}
-      <div style={{display:"flex",gap:8,marginBottom:12,flexWrap:"wrap"}}>
-        <button onClick={()=>rotate(-90)} style={{flex:1,padding:"10px 8px",background:C.card,
-          border:`1.5px solid ${C.border}`,borderRadius:12,cursor:"pointer",fontSize:13,
-          fontWeight:"500",color:C.textSoft,display:"flex",alignItems:"center",
-          justifyContent:"center",gap:6,boxShadow:`0 1px 4px ${C.shadow}`}}>
-          ↺ Ruota sx
+      {/* ── TOP BAR ── */}
+      <div style={{flexShrink:0,display:"flex",alignItems:"center",justifyContent:"space-between",
+        padding:"14px 16px 10px",background:"rgba(0,0,0,.6)",backdropFilter:"blur(10px)",
+        borderBottom:"1px solid rgba(255,255,255,.08)"}}>
+        <button onClick={onCancel} style={{background:"rgba(255,255,255,.1)",border:"none",
+          color:"#fff",padding:"8px 16px",borderRadius:20,cursor:"pointer",
+          fontFamily:"'DM Sans',sans-serif",fontSize:13,fontWeight:"500"}}>
+          Annulla
         </button>
-        <button onClick={()=>rotate(90)} style={{flex:1,padding:"10px 8px",background:C.card,
-          border:`1.5px solid ${C.border}`,borderRadius:12,cursor:"pointer",fontSize:13,
-          fontWeight:"500",color:C.textSoft,display:"flex",alignItems:"center",
-          justifyContent:"center",gap:6,boxShadow:`0 1px 4px ${C.shadow}`}}>
-          Ruota dx ↻
-        </button>
-        <button onClick={()=>{setCropMode(m=>!m);if(cropMode)setCropRect(null);}}
-          style={{flex:1,padding:"10px 8px",
-            background:cropMode?C.green:C.card,
-            border:`1.5px solid ${cropMode?C.green:C.border}`,borderRadius:12,
-            cursor:"pointer",fontSize:13,fontWeight:"500",
-            color:cropMode?"#fff":C.textSoft,
-            display:"flex",alignItems:"center",justifyContent:"center",gap:6,
-            boxShadow:`0 1px 4px ${C.shadow}`}}>
-          ✂️ {cropMode?"Annulla ritaglia":"Ritaglia"}
-        </button>
+        <span style={{color:"rgba(255,255,255,.7)",fontSize:11,
+          fontFamily:"'DM Mono',monospace",letterSpacing:"0.1em",textTransform:"uppercase"}}>
+          {hasCrop?"Area selezionata":"Trascina per ritagliare"}
+        </span>
+        <div style={{display:"flex",gap:8}}>
+          <button onClick={()=>rotate(-90)}
+            style={{background:"rgba(255,255,255,.1)",border:"none",color:"#fff",
+              width:38,height:38,borderRadius:12,cursor:"pointer",fontSize:18,
+              display:"flex",alignItems:"center",justifyContent:"center"}}>
+            ↺
+          </button>
+          <button onClick={()=>rotate(90)}
+            style={{background:"rgba(255,255,255,.1)",border:"none",color:"#fff",
+              width:38,height:38,borderRadius:12,cursor:"pointer",fontSize:18,
+              display:"flex",alignItems:"center",justifyContent:"center"}}>
+            ↻
+          </button>
+        </div>
       </div>
  
-      {cropMode&&<div style={{background:C.infoLight,border:`1px solid ${C.info}30`,
-        borderRadius:10,padding:"8px 12px",marginBottom:10,fontSize:11,color:C.info,fontWeight:"500"}}>
-        Trascina sull'immagine per selezionare l'area da ritagliare
-      </div>}
+      {/* ── IMAGE AREA ── fills remaining space */}
+      <div style={{flex:1,overflow:"hidden",position:"relative",
+        display:"flex",alignItems:"center",justifyContent:"center",
+        cursor:"crosshair",touchAction:"none",userSelect:"none"}}
+        onMouseDown={onDown} onMouseMove={onMove} onMouseUp={onUp}
+        onTouchStart={onDown} onTouchMove={onMove} onTouchEnd={onUp}>
  
-      {/* Canvas container */}
-      <div ref={containerRef} style={{position:"relative",width:"100%",
-        borderRadius:14,overflow:"hidden",marginBottom:14,
-        boxShadow:`0 4px 20px ${C.shadowMd}`,
-        cursor:cropMode?"crosshair":"default",touchAction:cropMode?"none":"auto"}}>
         <canvas ref={canvasRef}
-          style={{width:"100%",display:"block",userSelect:"none"}}
-          onMouseDown={onPointerDown} onMouseMove={onPointerMove} onMouseUp={onPointerUp}
-          onTouchStart={onPointerDown} onTouchMove={onPointerMove} onTouchEnd={onPointerUp}/>
-        {/* Dark overlay outside crop rect */}
-        {cropMode&&ov&&hasCrop&&<>
-          <div style={{position:"absolute",inset:0,background:"rgba(0,0,0,.45)",pointerEvents:"none"}}/>
-          <div style={{position:"absolute",
-            left:ov.left,top:ov.top,width:ov.width,height:ov.height,
-            border:"2px solid #fff",boxShadow:"0 0 0 9999px rgba(0,0,0,.45)",
-            pointerEvents:"none",borderRadius:2}}/>
+          style={{maxWidth:"100%",maxHeight:"100%",objectFit:"contain",
+            display:"block",pointerEvents:"none"}}/>
+ 
+        {/* crop overlay: dark vignette + bright selection frame */}
+        {overlay&&hasCrop&&<>
+          <div style={{position:"absolute",inset:0,background:"rgba(0,0,0,.55)",pointerEvents:"none"}}/>
+          <div style={{
+            position:"absolute",
+            left:overlay.left,top:overlay.top,
+            width:overlay.width,height:overlay.height,
+            boxShadow:"0 0 0 9999px rgba(0,0,0,.55)",
+            border:"2px solid #fff",
+            pointerEvents:"none",
+            borderRadius:2
+          }}/>
+          {/* Corner handles */}
+          {[[0,0],[1,0],[0,1],[1,1]].map(([cx,cy],i)=>(
+            <div key={i} style={{position:"absolute",
+              left:overlay.left+cx*overlay.width-4,
+              top:overlay.top+cy*overlay.height-4,
+              width:12,height:12,
+              border:"3px solid #fff",borderRadius:3,
+              background:"rgba(255,255,255,.2)",
+              pointerEvents:"none"}}/>
+          ))}
         </>}
+ 
+        {/* hint when no crop yet */}
+        {!hasCrop&&imgReady&&(
+          <div style={{position:"absolute",bottom:16,left:"50%",transform:"translateX(-50%)",
+            background:"rgba(0,0,0,.6)",backdropFilter:"blur(8px)",
+            color:"rgba(255,255,255,.8)",padding:"8px 18px",borderRadius:20,
+            fontSize:12,fontFamily:"'DM Sans',sans-serif",whiteSpace:"nowrap",
+            pointerEvents:"none",border:"1px solid rgba(255,255,255,.15)"}}>
+            ✂️ Trascina per selezionare l'area
+          </div>
+        )}
       </div>
  
-      <button className="btn-primary" style={s.btn()} onClick={applyAndConfirm}>
-        {hasCrop?"✂️ Applica e continua":"✓ Conferma e continua"}
-      </button>
-      <button className="btn-ghost" style={{...s.btn("ghost"),marginTop:8}} onClick={onCancel}>Annulla</button>
+      {/* ── BOTTOM BAR ── always visible */}
+      <div style={{flexShrink:0,padding:"12px 16px",
+        paddingBottom:`calc(12px + env(safe-area-inset-bottom))`,
+        background:"rgba(0,0,0,.7)",backdropFilter:"blur(10px)",
+        borderTop:"1px solid rgba(255,255,255,.08)",
+        display:"flex",gap:10}}>
+        {hasCrop&&(
+          <button onClick={()=>{setCropRect(null);}}
+            style={{flex:"0 0 auto",padding:"14px 18px",border:"1px solid rgba(255,255,255,.2)",
+              borderRadius:14,background:"rgba(255,255,255,.08)",color:"rgba(255,255,255,.7)",
+              fontFamily:"'DM Sans',sans-serif",fontSize:13,cursor:"pointer",fontWeight:"500"}}>
+            Azzera
+          </button>
+        )}
+        <button onClick={confirm}
+          style={{flex:1,padding:"14px",border:"none",borderRadius:14,cursor:"pointer",
+            background:hasCrop?C.green:"rgba(255,255,255,.15)",
+            color:hasCrop?"#fff":"rgba(255,255,255,.5)",
+            fontFamily:"'DM Sans',sans-serif",fontSize:14,fontWeight:"600",
+            boxShadow:hasCrop?`0 4px 18px rgba(26,58,42,.5)`:"none",
+            transition:"all .2s ease"}}>
+          {hasCrop?"✂️  Ritaglia e analizza →":"✨  Analizza senza ritaglia →"}
+        </button>
+      </div>
     </div>
   );
 }
@@ -1261,6 +1326,34 @@ function ReviewForm({form,setForm,fileData,payers,onSave,onCancel,err}){
             fontWeight:form.riferimento===f?"600":"400",transition:"all .18s"}}
             onClick={()=>upd("riferimento",f)}>{f}</button>)}
         </div>
+      </div>
+ 
+      <div style={{marginBottom:20}}>
+        <label style={s.label}>Metodo di pagamento</label>
+        <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+          {PAYMENT_METHODS.map(pm=>{
+            const active=form.metodo_pagamento===pm.id;
+            const col=pm.tracciabile?C.success:C.danger;
+            const bg=pm.tracciabile?C.successLight:C.dangerLight;
+            return<button key={pm.id} style={{
+              padding:"9px 14px",cursor:"pointer",
+              border:`1.5px solid ${active?col:C.border}`,borderRadius:12,
+              background:active?bg:C.card,
+              color:active?col:C.muted,
+              fontFamily:"'DM Sans',sans-serif",fontSize:13,
+              fontWeight:active?"600":"400",transition:"all .18s"}}
+              onClick={()=>upd("metodo_pagamento",active?null:pm.id)}>
+              {pm.tracciabile?"💳":"💵"} {pm.label}
+            </button>;
+          })}
+        </div>
+        {form.metodo_pagamento&&!pmTracciabile(form.metodo_pagamento)&&(
+          <div style={{marginTop:8,padding:"8px 12px",borderRadius:10,
+            background:C.dangerLight,border:`1px solid ${C.danger}20`,
+            fontSize:11,color:C.danger,fontWeight:"500"}}>
+            ⚠️ Pagamento in contanti — potrebbe non essere detraibile
+          </div>
+        )}
       </div>
  
       <button className="btn-primary" style={{...s.btn(),opacity:valid?1:.4,
