@@ -663,15 +663,14 @@ function App(){
               </div>
             </div>
           </div>
-          <div style={{textAlign:"right"}}>
-            <div style={{fontSize:10,color:C.muted,fontFamily:"'DM Mono',monospace",marginBottom:2}}>{curYear}</div>
-            <div style={{...s.number,fontSize:20,color:C.gold,letterSpacing:"-0.02em"}}>{fmt(totalYear)}</div>
-            <button onClick={()=>{setPage("impostazioni");setDetail(null);}}
-              style={{fontSize:10,color:C.mutedLight,background:"none",border:"none",cursor:"pointer",
-                fontFamily:"'DM Mono',monospace",marginTop:2,padding:0}}>
-              ⚙ impostazioni
-            </button>
-          </div>
+          <button onClick={()=>{setPage("impostazioni");setDetail(null);}}
+            style={{fontSize:10,color:C.mutedLight,background:"none",border:"none",cursor:"pointer",
+              fontFamily:"'DM Mono',monospace",padding:0,display:"flex",alignItems:"center",gap:4}}>
+            <span style={{width:4,height:4,borderRadius:"50%",
+              background:cfSyncing?C.gold:cfConfigured?C.success:C.border,
+              display:"inline-block",animation:cfSyncing?"pulse 1s infinite":undefined}}/>
+            ⚙ impostazioni
+          </button>
         </div>
       </div>
  
