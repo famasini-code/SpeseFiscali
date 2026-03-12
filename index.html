@@ -99,6 +99,43 @@ const CATS=[
   {id:"erogazioni",  label:"Erogazioni",          icon:"❤️", color:"#9333EA", bg:"#FAF5FF"},
 ];
  
+const SUBCATS={
+  salute:[
+    {id:"farmaci",           label:"Farmaci"},
+    {id:"visita_spec",       label:"Visita specialistica"},
+    {id:"ticket_ssn",        label:"Ticket SSN"},
+    {id:"occhiali",          label:"Occhiali/lenti"},
+    {id:"dispositivi",       label:"Dispositivi medici"},
+    {id:"dentista",          label:"Dentista"},
+    {id:"ricovero",          label:"Ricovero"},
+    {id:"psicologo",         label:"Psicologo"},
+  ],
+  casa:[
+    {id:"affitto",           label:"Affitto"},
+    {id:"mutuo",             label:"Mutuo"},
+    {id:"ristrutturazione",  label:"Ristrutturazione"},
+    {id:"risparmio_en",      label:"Risparmio energetico"},
+    {id:"bonus_mobili",      label:"Bonus mobili"},
+  ],
+  istruzione:[
+    {id:"tasse_scolastiche", label:"Tasse scolastiche"},
+    {id:"mensa",             label:"Mensa"},
+    {id:"universita",        label:"Università"},
+    {id:"sport",             label:"Sport"},
+    {id:"libri",             label:"Libri"},
+  ],
+  famiglia:[
+    {id:"assicurazione",     label:"Assicurazione"},
+    {id:"badante",           label:"Contributi badante"},
+    {id:"funebri",           label:"Spese funebri"},
+    {id:"contributi_prev",   label:"Contributi previdenziali"},
+  ],
+  // veterinaria e erogazioni: nessuna sottocategoria
+};
+ 
+const subcatList=catId=>SUBCATS[catId]||[];
+const subcatLabel=(catId,subcatId)=>SUBCATS[catId]?.find(s=>s.id===subcatId)?.label||subcatId||"—";
+ 
 const fmt=n=>Number(n).toLocaleString("it-IT",{style:"currency",currency:"EUR"});
 const fmtDate=iso=>{if(!iso)return"—";const[y,m,d]=iso.split("-");return`${d}/${m}/${y}`;};
 const catColor=id=>CATS.find(c=>c.id===id)?.color??C.muted;
@@ -277,8 +314,14 @@ async function analyzeFile(base64,mediaType,apiKey){
       {type:"text",text:`Analizza questo documento italiano (ricevuta/scontrino/fattura).
 Cerca nel documento i codici fiscali: MSNFBA79P07C573G=Fabio, PNTMSS82S50C573K=Melissa, MSNLSN09S04H294X=Alessandro, MSNLRD15H16H294Q=Leonardo.
 Rispondi SOLO con JSON valido, niente markdown:
-{"beneficiario":"nome esercente/struttura","importo":0.00,"data":"YYYY-MM-DD","descrizione":"max 60 car","categoria":"salute|casa|istruzione|famiglia|veterinaria|erogazioni","cf_trovato":"codice fiscale trovato o null"}
-Categorie: salute=farmaci/visite/ticket/occhiali, casa=affitto/mutuo/ristrutturazione, istruzione=scuole/università/sport, famiglia=assicurazioni/contributi/funebri, veterinaria=cure animali, erogazioni=onlus/donazioni.
+{"beneficiario":"nome esercente/struttura","importo":0.00,"data":"YYYY-MM-DD","descrizione":"max 60 car","categoria":"salute|casa|istruzione|famiglia|veterinaria|erogazioni","sottocategoria":"id sottocategoria o null","cf_trovato":"codice fiscale trovato o null"}
+Categorie e sottocategorie:
+- salute: farmaci, visita_spec, ticket_ssn, occhiali, dispositivi, dentista, ricovero, psicologo
+- casa: affitto, mutuo, ristrutturazione, risparmio_en, bonus_mobili
+- istruzione: tasse_scolastiche, mensa, universita, sport, libri
+- famiglia: assicurazione, badante, funebri, contributi_prev
+- veterinaria: (nessuna sottocategoria, usa null)
+- erogazioni: (nessuna sottocategoria, usa null)
 Se non leggibile usa null per stringhe e 0 per importo.`}
     ]}]})
   });
@@ -292,7 +335,9 @@ Se non leggibile usa null per stringhe e 0 per importo.`}
 function exportExcel(expenses,year){
   const rows=expenses.map(e=>({
     "Data":fmtDate(e.data),"Beneficiario":e.beneficiario,"Descrizione":e.descrizione,
-    "Categoria":catLabel(e.categoria),"Pagante":e.pagante,"Per chi":e.riferimento||e.pagante,
+    "Categoria":catLabel(e.categoria),
+    "Tipo spesa":e.sottocategoria?subcatLabel(e.categoria,e.sottocategoria):"—",
+    "Pagante":e.pagante,"Per chi":e.riferimento||e.pagante,
     "Tipo doc.":e.docType==="application/pdf"?"PDF":e.hasDoc?"Immagine":"—",
     "Importo €":Number(e.importo)
   }));
@@ -304,7 +349,7 @@ function exportExcel(expenses,year){
   const wb=XLSX.utils.book_new();
   const ws1=XLSX.utils.json_to_sheet(rows);
   const ws2=XLSX.utils.json_to_sheet(summary);
-  ws1["!cols"]=[12,28,35,18,10,12,10,12].map(w=>({wch:w}));
+  ws1["!cols"]=[12,28,35,18,18,10,12,10,12].map(w=>({wch:w}));
   ws2["!cols"]=[28,6,12].map(w=>({wch:w}));
   XLSX.utils.book_append_sheet(wb,ws1,`Spese ${year}`);
   XLSX.utils.book_append_sheet(wb,ws2,"Riepilogo");
@@ -408,6 +453,15 @@ function App(){
     if(cfSec){
       cfService.configure(CF_WORKER_URL,cfSec);
       setCfConfigured(true);
+      // Carica subito i dati aggiornati dal cloud
+      cfService.loadExpenses()
+        .then(data=>{
+          if(data.length>0){
+            setExpenses(data);
+            LS.set(KEY_LS,JSON.stringify(data));
+          }
+        })
+        .catch(()=>{}); // fallback silenzioso su localStorage già caricato
     }
   },[]);
  
@@ -459,6 +513,7 @@ function App(){
       setForm({beneficiario:r.beneficiario||"",importo:r.importo??"",
         data:r.data||new Date().toISOString().slice(0,10),
         descrizione:r.descrizione||"",categoria:r.categoria||"salute",
+        sottocategoria:r.sottocategoria||null,
         pagante:detectedPagante||PAYERS[0],
         riferimento:detectedRiferimento||FAMILY[0],
         _cfRilevato:cfMatch?{name:cfMatch.name,type:cfMatch.type}:null});
@@ -466,7 +521,7 @@ function App(){
     }catch(e){
       setErr("Errore AI: "+e.message);
       setForm({beneficiario:"",importo:"",data:new Date().toISOString().slice(0,10),
-        descrizione:"",categoria:"salute",pagante:PAYERS[0],riferimento:FAMILY[0]});
+        descrizione:"",categoria:"salute",sottocategoria:null,pagante:PAYERS[0],riferimento:FAMILY[0]});
       setStep("review");
     }
   };
@@ -645,7 +700,7 @@ function App(){
             <button className="btn-ghost" style={{...s.btn("ghost"),marginTop:8}} onClick={()=>{
               setStep("review");setFileData(null);
               setForm({beneficiario:"",importo:"",data:new Date().toISOString().slice(0,10),
-                descrizione:"",categoria:"salute",pagante:PAYERS[0],riferimento:FAMILY[0]});}}>
+                descrizione:"",categoria:"salute",sottocategoria:null,pagante:PAYERS[0],riferimento:FAMILY[0]});}}>
               ✏️ &nbsp;Inserimento manuale
             </button>
  
@@ -667,6 +722,7 @@ function App(){
                       {fmtDate(e.data)} · {e.pagante}
                       {e.riferimento&&e.riferimento!==e.pagante&&
                         <span style={{color:C.info}}> → {e.riferimento}</span>}
+                      {e.sottocategoria&&<span style={{color:catColor(e.categoria),marginLeft:4}}>· {subcatLabel(e.categoria,e.sottocategoria)}</span>}
                       {e.hasDoc&&<span style={{marginLeft:5,color:C.gold}}>
                         {e.docType==="application/pdf"?"📄":"🖼"}</span>}
                     </div>
@@ -796,7 +852,7 @@ function App(){
                 <div style={{textAlign:"right",flexShrink:0}}>
                   <div style={{...s.number,color:C.gold,fontSize:17,fontWeight:"600"}}>{fmt(e.importo)}</div>
                   <div style={{fontSize:10,color:catColor(e.categoria),marginTop:3,fontWeight:"500"}}>
-                    {catLabel(e.categoria)}
+                    {e.sottocategoria?subcatLabel(e.categoria,e.sottocategoria):catLabel(e.categoria)}
                   </div>
                 </div>
               </div>
@@ -903,6 +959,7 @@ function DetailView({expense,onBack,onDelete}){
             </div>
             <div style={{fontSize:12,color:cat?.color,marginTop:4,fontWeight:"500"}}>
               {catLabel(expense.categoria)}
+              {expense.sottocategoria&&<span style={{color:C.muted}}> · {subcatLabel(expense.categoria,expense.sottocategoria)}</span>}
             </div>
           </div>
           <div style={{...s.number,fontSize:26,color:C.gold,fontWeight:"600",flexShrink:0}}>
@@ -1103,7 +1160,9 @@ function ImageEditor({dataUrl,onConfirm,onCancel}){
 /* ── REVIEW FORM ── */
 function ReviewForm({form,setForm,fileData,payers,onSave,onCancel,err}){
   const upd=(k,v)=>setForm(f=>({...f,[k]:v}));
+  const updCat=(catId)=>setForm(f=>({...f,categoria:catId,sottocategoria:null}));
   const valid=form.beneficiario&&form.importo&&Number(form.importo)>0;
+  const subcats=subcatList(form.categoria);
   return(
     <div style={{animation:"fadeUp .25s ease"}}>
       {form._cfRilevato&&<div style={{background:C.successLight,border:`1px solid ${C.success}30`,
@@ -1157,11 +1216,26 @@ function ReviewForm({form,setForm,fileData,payers,onSave,onCancel,err}){
           onBlur={e=>e.target.style.borderColor=C.border}/>
       </div>
  
-      <div style={{marginBottom:12}}>
+      <div style={{marginBottom:subcats.length?8:12}}>
         <label style={s.label}>Categoria</label>
         <div>{CATS.map(c=><span key={c.id} style={s.chip(form.categoria===c.id,c.color,c.bg)}
-          onClick={()=>upd("categoria",c.id)}>{c.icon} {c.label}</span>)}</div>
+          onClick={()=>updCat(c.id)}>{c.icon} {c.label}</span>)}</div>
       </div>
+ 
+      {subcats.length>0&&(
+        <div style={{marginBottom:12,paddingLeft:4,borderLeft:`3px solid ${catColor(form.categoria)}30`}}>
+          <label style={{...s.label,paddingLeft:8}}>Tipo di spesa</label>
+          <div style={{paddingLeft:4}}>
+            {subcats.map(sc=>(
+              <span key={sc.id}
+                style={s.chip(form.sottocategoria===sc.id,catColor(form.categoria),catBg(form.categoria))}
+                onClick={()=>upd("sottocategoria",form.sottocategoria===sc.id?null:sc.id)}>
+                {sc.label}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
  
       <div style={{marginBottom:12}}>
         <label style={s.label}>Pagante</label>
@@ -1207,7 +1281,19 @@ function ExportPage({expenses,cfConfigured,cfSyncing}){
   const[year,setYear]=useState(years[0]||curYear);
   const byYear=expenses.filter(e=>e.data?.startsWith(year));
   const total=byYear.reduce((s,e)=>s+Number(e.importo),0);
-  const missingCats=CATS.filter(c=>!byYear.some(e=>e.categoria===c.id));
+ 
+  // Categorie intere mancanti (veterinaria, erogazioni e quelle senza sottocategorie)
+  const missingCats=CATS.filter(c=>!subcatList(c.id).length&&!byYear.some(e=>e.categoria===c.id));
+  // Sotto-categorie mancanti per categorie che le hanno
+  const missingSubcats=[];
+  CATS.forEach(c=>{
+    const subs=subcatList(c.id);
+    if(!subs.length)return;
+    subs.forEach(sc=>{
+      if(!byYear.some(e=>e.categoria===c.id&&e.sottocategoria===sc.id))
+        missingSubcats.push({cat:c,sc});
+    });
+  });
  
   // Duplicati sospetti: coppie con stesso importo + categoria + data ±3gg
   const suspectPairs=[];
@@ -1232,12 +1318,12 @@ function ExportPage({expenses,cfConfigured,cfSyncing}){
           style={s.chip(year===y,C.green,C.greenLight)} onClick={()=>setYear(y)}>{y}</span>)}
       </div>
  
-      {/* Alert categorie mancanti */}
-      {byYear.length>0&&missingCats.length>0&&(
+      {/* Alert voci mancanti */}
+      {byYear.length>0&&(missingCats.length>0||missingSubcats.length>0)&&(
         <div style={{background:C.goldLight,border:`1.5px solid ${C.gold}40`,
           borderRadius:16,padding:"14px 16px",marginBottom:16}}>
           <p style={{...s.label,color:C.gold,margin:"0 0 10px"}}>
-            ⚠️ Categorie senza spese — hai qualcosa da aggiungere?
+            ⚠️ Voci senza spese — hai qualcosa da aggiungere?
           </p>
           <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
             {missingCats.map(c=>(
@@ -1245,6 +1331,13 @@ function ExportPage({expenses,cfConfigured,cfSyncing}){
                 padding:"6px 12px",borderRadius:20,fontSize:11,fontWeight:"500",
                 border:`1.5px solid ${c.color}40`,background:c.bg,color:c.color}}>
                 {c.icon} {c.label}
+              </span>
+            ))}
+            {missingSubcats.map(({cat,sc})=>(
+              <span key={cat.id+sc.id} style={{display:"inline-flex",alignItems:"center",gap:5,
+                padding:"6px 12px",borderRadius:20,fontSize:11,fontWeight:"500",
+                border:`1.5px solid ${cat.color}40`,background:cat.bg,color:cat.color}}>
+                {cat.icon} {sc.label}
               </span>
             ))}
           </div>
