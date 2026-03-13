@@ -151,6 +151,22 @@ const catLabel=id=>CATS.find(c=>c.id===id)?.label??id;
 const toBase64=file=>new Promise((r,j)=>{const rd=new FileReader();rd.onload=()=>r(rd.result.split(",")[1]);rd.onerror=j;rd.readAsDataURL(file);});
 const toDataUrl=file=>new Promise((r,j)=>{const rd=new FileReader();rd.onload=()=>r(rd.result);rd.onerror=j;rd.readAsDataURL(file);});
 
+// Riduce immagine a max 1500px sul lato lungo, JPEG 0.78 — silenzioso, zero interazione
+const resizeImage=(dataUrl,maxPx=1500,quality=0.78)=>new Promise(res=>{
+  const img=new Image();
+  img.onload=()=>{
+    const scale=Math.min(1,maxPx/Math.max(img.width,img.height));
+    const w=Math.round(img.width*scale);
+    const h=Math.round(img.height*scale);
+    const c=document.createElement("canvas");
+    c.width=w;c.height=h;
+    c.getContext("2d").drawImage(img,0,0,w,h);
+    const out=c.toDataURL("image/jpeg",quality);
+    res({dataUrl:out,base64:out.split(",")[1]});
+  };
+  img.src=dataUrl;
+});
+
 const LS={
   get:k=>{try{const v=localStorage.getItem(k);return v?{value:v}:null;}catch{return null;}},
   set:(k,v)=>{try{localStorage.setItem(k,v);}catch{}},
@@ -493,7 +509,10 @@ function App(){
   const[detail,setDetail]=useState(null);
   const[cfConfigured,setCfConfigured]=useState(()=>!!LS.get(KEY_CF_SECRET)?.value);
   const[cfSyncing,setCfSyncing]=useState(false);
-  const[duplicateWarning,setDuplicateWarning]=useState(null); // {suspects:[], onConfirm, onCancel}
+  const[duplicateWarning,setDuplicateWarning]=useState(null);
+  const[batchQueue,setBatchQueue]=useState([]);
+  const[batchIndex,setBatchIndex]=useState(0);
+  const[batchTotal,setBatchTotal]=useState(0);
   const[filterYear,setFilterYear]=useState(new Date().getFullYear().toString());
   const[filterCat,setFilterCat]=useState("all");
   const[filterPayer,setFilterPayer]=useState("all");
@@ -553,12 +572,90 @@ function App(){
   };
 
   const handleFile=async e=>{
-    const file=e.target.files[0];if(!file)return;
-    const isPdf=file.type==="application/pdf";
-    const base64=await toBase64(file);
-    const dataUrl=isPdf?null:await toDataUrl(file);
-    setFileData({base64,mediaType:file.type,dataUrl,isPdf});
-    setStep(isPdf?"preview":"edit");e.target.value="";
+    const files=[...e.target.files];if(!files.length)return;
+    e.target.value="";
+    if(files.length===1){
+      const file=files[0];
+      const isPdf=file.type==="application/pdf";
+      if(isPdf){
+        const base64=await toBase64(file);
+        setFileData({base64,mediaType:file.type,dataUrl:null,isPdf:true});
+        setBatchTotal(0);
+        analyze(base64,file.type);
+      }else{
+        const rawUrl=await toDataUrl(file);
+        const{dataUrl,base64}=await resizeImage(rawUrl);
+        setFileData({base64,mediaType:"image/jpeg",dataUrl,isPdf:false});
+        setBatchTotal(0);
+        analyze(base64,"image/jpeg");
+      }
+    }else{
+      // batch — resize in parallelo, poi analizza in sequenza
+      const items=await Promise.all(files.map(async f=>{
+        const isPdf=f.type==="application/pdf";
+        if(isPdf){
+          const base64=await toBase64(f);
+          return{base64,mediaType:f.type,dataUrl:null,isPdf:true};
+        }else{
+          const rawUrl=await toDataUrl(f);
+          const{dataUrl,base64}=await resizeImage(rawUrl);
+          return{base64,mediaType:"image/jpeg",dataUrl,isPdf:false};
+        }
+      }));
+      setBatchQueue(items);
+      setBatchTotal(items.length);
+      setBatchIndex(0);
+      setFileData(items[0]);
+      analyzeBatchItem(items[0],0,items);
+    }
+  };
+
+  const analyzeBatchItem=async(item,idx,queue)=>{
+    setStep("loading");setErr(null);
+    const{base64:b64,mediaType:mt}=item;
+    try{
+      const r=await analyzeFile(b64,mt,apiKey);
+      const cls=classifyExpense(r.beneficiario||"",r.descrizione||"");
+      let categoria=cls.categoria;
+      let sottocategoria=cls.sottocategoria;
+      if(cls.confidence==="low"){
+        const aiCls=await classifyWithAI(r.beneficiario||"",r.descrizione||"",apiKey);
+        categoria=aiCls.categoria||"salute";
+        sottocategoria=aiCls.sottocategoria||null;
+      }
+      const cfUpper=(r.cf_trovato||"").toUpperCase().trim();
+      const cfMatch=CF_MAP[cfUpper]||null;
+      setForm({beneficiario:r.beneficiario||"",importo:r.importo??"",
+        data:r.data||new Date().toISOString().slice(0,10),
+        descrizione:r.descrizione||"",categoria,sottocategoria,
+        metodo_pagamento:r.metodo_pagamento||null,
+        pagante:cfMatch?.type==="pagante"?cfMatch.name:PAYERS[0],
+        riferimento:cfMatch?cfMatch.name:FAMILY[0],
+        _cfRilevato:cfMatch?{name:cfMatch.name,type:cfMatch.type}:null});
+      setStep("review");
+    }catch(e){
+      setErr("Errore AI: "+e.message);
+      setForm({beneficiario:"",importo:"",data:new Date().toISOString().slice(0,10),
+        descrizione:"",categoria:"salute",sottocategoria:null,metodo_pagamento:null,
+        pagante:PAYERS[0],riferimento:FAMILY[0]});
+      setStep("review");
+    }
+  };
+
+  // Avanza al prossimo documento nel batch (o chiude)
+  const batchNext=()=>{
+    const next=batchIndex+1;
+    if(next<batchQueue.length){
+      setBatchIndex(next);
+      const item=batchQueue[next];
+      setFileData(item);
+      analyzeBatchItem(item,next,batchQueue);
+    }else{
+      // batch finito
+      setBatchQueue([]);setBatchIndex(0);setBatchTotal(0);
+      setStep("idle");setFileData(null);setForm({});
+      setPage("archivio");
+    }
   };
 
   const analyze=async(b64Override,mtOverride)=>{
@@ -566,30 +663,23 @@ function App(){
     const b64=b64Override??fileData?.base64;
     const mt=mtOverride??fileData?.mediaType;
     try{
-      // 1. AI estrae dati grezzi dal documento (senza classificazione)
       const r=await analyzeFile(b64,mt,apiKey);
-      // 2. Classificatore rule-based
       const cls=classifyExpense(r.beneficiario||"",r.descrizione||"");
       let categoria=cls.categoria;
       let sottocategoria=cls.sottocategoria;
-      // 3. Se nessuna regola ha fatto match → fallback AI (Haiku, solo testo, economico)
       if(cls.confidence==="low"){
         const aiCls=await classifyWithAI(r.beneficiario||"",r.descrizione||"",apiKey);
         categoria=aiCls.categoria||"salute";
         sottocategoria=aiCls.sottocategoria||null;
       }
-      // 4. CF recognition
       const cfUpper=(r.cf_trovato||"").toUpperCase().trim();
       const cfMatch=CF_MAP[cfUpper]||null;
-      const detectedPagante=cfMatch?.type==="pagante"?cfMatch.name:null;
-      const detectedRiferimento=cfMatch?cfMatch.name:null;
       setForm({beneficiario:r.beneficiario||"",importo:r.importo??"",
         data:r.data||new Date().toISOString().slice(0,10),
-        descrizione:r.descrizione||"",
-        categoria, sottocategoria,
+        descrizione:r.descrizione||"",categoria,sottocategoria,
         metodo_pagamento:r.metodo_pagamento||null,
-        pagante:detectedPagante||PAYERS[0],
-        riferimento:detectedRiferimento||FAMILY[0],
+        pagante:cfMatch?.type==="pagante"?cfMatch.name:PAYERS[0],
+        riferimento:cfMatch?cfMatch.name:FAMILY[0],
         _cfRilevato:cfMatch?{name:cfMatch.name,type:cfMatch.type}:null});
       setStep("review");
     }catch(e){
@@ -625,14 +715,15 @@ function App(){
     const updated=[newExp,...expenses];
     setExpenses(updated);
     await persistExpenses(updated);
-    // Salva allegato su CF
-    if(fileData){
-      const saves=[];
-      if(cfService.configured)saves.push(cfService.saveDocument(id,fileData).catch(()=>{}));
-      if(saves.length)Promise.all(saves).then(()=>showToast("Spesa e allegato salvati ✓"));
-      else showToast("Spesa salvata ✓");
-    }else showToast("Spesa salvata ✓");
-    setStep("idle");setFileData(null);setForm({});setPage("archivio");
+    if(fileData&&cfService.configured)cfService.saveDocument(id,fileData).catch(()=>{});
+    const isBatch=batchTotal>1;
+    if(isBatch){
+      showToast(`Spesa ${batchIndex+1}/${batchTotal} salvata ✓`);
+      batchNext();
+    }else{
+      showToast(fileData?"Spesa e allegato salvati ✓":"Spesa salvata ✓");
+      setStep("idle");setFileData(null);setForm({});setPage("archivio");
+    }
   };
 
   const saveExpense=async()=>{
@@ -765,10 +856,18 @@ function App(){
                 Ricevuta · Scontrino · Fattura · PDF
               </p>
               <input ref={fileRef} type="file" accept="image/*,application/pdf"
-                capture="environment" style={{display:"none"}} onChange={handleFile}/>
+                capture="environment" multiple style={{display:"none"}} onChange={handleFile}/>
             </div>
             <button className="btn-primary" style={s.btn()} onClick={()=>fileRef.current.click()}>
               📷 &nbsp;Scatta foto / Carica file
+            </button>
+            <button className="btn-ghost" style={{...s.btn("ghost"),marginTop:8}}
+              onClick={()=>{
+                const inp=document.createElement("input");
+                inp.type="file";inp.accept="image/*,application/pdf";inp.multiple=true;
+                inp.onchange=handleFile;inp.click();
+              }}>
+              📚 &nbsp;Carica più documenti
             </button>
             <button className="btn-ghost" style={{...s.btn("ghost"),marginTop:8}} onClick={()=>{
               setStep("review");setFileData(null);
@@ -808,45 +907,29 @@ function App(){
             </>}
           </>}
 
-          {step==="edit"&&fileData&&(
-            <ImageEditor
-              dataUrl={fileData.dataUrl}
-              onConfirm={(newDataUrl)=>{
-                const b64=newDataUrl.split(",")[1];
-                setFileData(f=>({...f,dataUrl:newDataUrl,base64:b64}));
-                analyze(b64, fileData.mediaType);
-              }}
-              onCancel={()=>{setStep("idle");setFileData(null);}}
-            />
-          )}
-
-          {step==="preview"&&fileData&&<>
-            <p style={s.label}>Documento caricato</p>
-            {fileData.isPdf
-              ?<div style={{...s.card,textAlign:"center",padding:"36px",marginBottom:16,
-                  background:`linear-gradient(135deg,#F0F9FF,#EFF6FF)`}}>
-                  <div style={{fontSize:56,marginBottom:8}}>📄</div>
-                  <p style={{color:C.info,fontFamily:"'DM Mono',monospace",fontSize:12,fontWeight:"500"}}>PDF pronto per analisi</p>
-                </div>
-              :<img src={fileData.dataUrl} alt="receipt" style={{width:"100%",borderRadius:16,
-                  marginBottom:16,maxHeight:260,objectFit:"cover",
-                  boxShadow:`0 4px 20px ${C.shadowMd}`}}/>
-            }
-            <button className="btn-primary" style={s.btn()} onClick={analyze}>
-              ✨ &nbsp;Analizza con AI
-            </button>
-            <button className="btn-ghost" style={{...s.btn("ghost"),marginTop:8}}
-              onClick={()=>{setStep("idle");setFileData(null);setErr(null);}}>Annulla</button>
-          </>}
-
           {step==="loading"&&<div style={{textAlign:"center",padding:"80px 0"}}>
             <div style={{fontSize:44,marginBottom:16,animation:"spin 1.2s linear infinite"}}>⚙️</div>
-            <p style={{color:C.muted,fontFamily:"'DM Mono',monospace",fontSize:12}}>Estrazione dati in corso…</p>
+            {batchTotal>1
+              ?<>
+                <p style={{color:C.text,fontFamily:"'DM Sans',sans-serif",fontSize:15,fontWeight:"600",marginBottom:4}}>
+                  Documento {batchIndex+1} di {batchTotal}
+                </p>
+                <div style={{width:160,height:4,background:C.border,borderRadius:4,margin:"10px auto 0",overflow:"hidden"}}>
+                  <div style={{height:"100%",background:C.green,borderRadius:4,
+                    width:`${((batchIndex+1)/batchTotal)*100}%`,transition:"width .3s ease"}}/>
+                </div>
+              </>
+              :<p style={{color:C.muted,fontFamily:"'DM Mono',monospace",fontSize:12}}>Estrazione dati in corso…</p>
+            }
           </div>}
 
           {step==="review"&&<ReviewForm form={form} setForm={setForm} fileData={fileData}
             payers={payers} onSave={saveExpense} err={err}
-            onCancel={()=>{setStep("idle");setFileData(null);setForm({});}}/>}
+            batchIndex={batchIndex} batchTotal={batchTotal} onSkip={batchTotal>1?batchNext:null}
+            onCancel={()=>{
+              if(batchTotal>1){setBatchQueue([]);setBatchIndex(0);setBatchTotal(0);}
+              setStep("idle");setFileData(null);setForm({});
+            }}/>}
         </>}
 
         {/* ARCHIVIO */}
@@ -1070,229 +1153,39 @@ function DetailView({expense,onBack,onDelete}){
   );
 }
 
-/* ── IMAGE EDITOR ── fullscreen modal, crop always-on */
-function ImageEditor({dataUrl,onConfirm,onCancel}){
-  const canvasRef=useRef();
-  const imgRef=useRef(new Image());
-  const[rotation,setRotation]=useState(0);
-  const[cropRect,setCropRect]=useState(null);
-  const[dragging,setDragging]=useState(false);
-  const[dragStart,setDragStart]=useState(null);
-  const[imgReady,setImgReady]=useState(false);
-
-  // Lock body scroll while editor is open
-  useEffect(()=>{
-    const prev=document.body.style.overflow;
-    document.body.style.overflow="hidden";
-    return()=>{document.body.style.overflow=prev;};
-  },[]);
-
-  const drawImage=useCallback((rot)=>{
-    const canvas=canvasRef.current;
-    const img=imgRef.current;
-    if(!canvas||!img.naturalWidth)return;
-    const r=(rot??rotation);
-    const rad=r*Math.PI/180;
-    const swap=r%180!==0;
-    const cw=swap?img.naturalHeight:img.naturalWidth;
-    const ch=swap?img.naturalWidth:img.naturalHeight;
-    canvas.width=cw;canvas.height=ch;
-    const ctx=canvas.getContext("2d");
-    ctx.clearRect(0,0,cw,ch);
-    ctx.save();ctx.translate(cw/2,ch/2);ctx.rotate(rad);
-    ctx.drawImage(img,-img.naturalWidth/2,-img.naturalHeight/2);
-    ctx.restore();
-    setCropRect(null);
-  },[rotation]);
-
-  useEffect(()=>{
-    const img=imgRef.current;
-    img.onload=()=>{drawImage(0);setImgReady(true);};
-    img.src=dataUrl;
-  },[]);
-
-  const rotate=(deg)=>{
-    const nr=(rotation+deg+360)%360;
-    setRotation(nr);drawImage(nr);
-  };
-
-  // Canvas coords from touch/mouse event
-  const getPos=(e)=>{
-    const canvas=canvasRef.current;
-    const rect=canvas.getBoundingClientRect();
-    const sx=canvas.width/rect.width;
-    const sy=canvas.height/rect.height;
-    const src=e.touches?e.touches[0]:e;
-    return{x:(src.clientX-rect.left)*sx,y:(src.clientY-rect.top)*sy};
-  };
-
-  const onDown=(e)=>{
-    e.preventDefault();
-    const pos=getPos(e);
-    setDragStart(pos);setCropRect({x:pos.x,y:pos.y,w:0,h:0});setDragging(true);
-  };
-  const onMove=(e)=>{
-    if(!dragging||!dragStart)return;
-    e.preventDefault();
-    const pos=getPos(e);
-    const canvas=canvasRef.current;
-    setCropRect({
-      x:Math.max(0,Math.min(dragStart.x,pos.x)),
-      y:Math.max(0,Math.min(dragStart.y,pos.y)),
-      w:Math.min(Math.abs(pos.x-dragStart.x),canvas.width-Math.min(dragStart.x,pos.x)),
-      h:Math.min(Math.abs(pos.y-dragStart.y),canvas.height-Math.min(dragStart.y,pos.y))
-    });
-  };
-  const onUp=()=>setDragging(false);
-
-  // Display-space overlay coords
-  const ov=()=>{
-    if(!cropRect||!canvasRef.current)return null;
-    const canvas=canvasRef.current;
-    const rect=canvas.getBoundingClientRect();
-    return{
-      left:cropRect.x*(rect.width/canvas.width),
-      top:cropRect.y*(rect.height/canvas.height),
-      width:cropRect.w*(rect.width/canvas.width),
-      height:cropRect.h*(rect.height/canvas.height)
-    };
-  };
-
-  const hasCrop=cropRect&&cropRect.w>20&&cropRect.h>20;
-
-  const confirm=()=>{
-    const canvas=canvasRef.current;
-    if(hasCrop){
-      const out=document.createElement("canvas");
-      out.width=Math.round(cropRect.w);out.height=Math.round(cropRect.h);
-      out.getContext("2d").drawImage(canvas,
-        Math.round(cropRect.x),Math.round(cropRect.y),
-        Math.round(cropRect.w),Math.round(cropRect.h),
-        0,0,Math.round(cropRect.w),Math.round(cropRect.h));
-      onConfirm(out.toDataURL("image/jpeg",0.92));
-    }else{
-      onConfirm(canvas.toDataURL("image/jpeg",0.92));
-    }
-  };
-
-  const overlay=ov();
-
-  return(
-    <div style={{position:"fixed",inset:0,zIndex:900,background:"#0D0D0D",
-      display:"flex",flexDirection:"column",animation:"fadeIn .2s ease"}}>
-
-      {/* ── TOP BAR ── */}
-      <div style={{flexShrink:0,display:"flex",alignItems:"center",justifyContent:"space-between",
-        padding:"14px 16px 10px",background:"rgba(0,0,0,.6)",backdropFilter:"blur(10px)",
-        borderBottom:"1px solid rgba(255,255,255,.08)"}}>
-        <button onClick={onCancel} style={{background:"rgba(255,255,255,.1)",border:"none",
-          color:"#fff",padding:"8px 16px",borderRadius:20,cursor:"pointer",
-          fontFamily:"'DM Sans',sans-serif",fontSize:13,fontWeight:"500"}}>
-          Annulla
-        </button>
-        <span style={{color:"rgba(255,255,255,.7)",fontSize:11,
-          fontFamily:"'DM Mono',monospace",letterSpacing:"0.1em",textTransform:"uppercase"}}>
-          {hasCrop?"Area selezionata":"Trascina per ritagliare"}
-        </span>
-        <div style={{display:"flex",gap:8}}>
-          <button onClick={()=>rotate(-90)}
-            style={{background:"rgba(255,255,255,.1)",border:"none",color:"#fff",
-              width:38,height:38,borderRadius:12,cursor:"pointer",fontSize:18,
-              display:"flex",alignItems:"center",justifyContent:"center"}}>
-            ↺
-          </button>
-          <button onClick={()=>rotate(90)}
-            style={{background:"rgba(255,255,255,.1)",border:"none",color:"#fff",
-              width:38,height:38,borderRadius:12,cursor:"pointer",fontSize:18,
-              display:"flex",alignItems:"center",justifyContent:"center"}}>
-            ↻
-          </button>
-        </div>
-      </div>
-
-      {/* ── IMAGE AREA ── fills remaining space */}
-      <div style={{flex:1,overflow:"hidden",position:"relative",
-        display:"flex",alignItems:"center",justifyContent:"center",
-        cursor:"crosshair",touchAction:"none",userSelect:"none"}}
-        onMouseDown={onDown} onMouseMove={onMove} onMouseUp={onUp}
-        onTouchStart={onDown} onTouchMove={onMove} onTouchEnd={onUp}>
-
-        <canvas ref={canvasRef}
-          style={{maxWidth:"100%",maxHeight:"100%",objectFit:"contain",
-            display:"block",pointerEvents:"none"}}/>
-
-        {/* crop overlay: dark vignette + bright selection frame */}
-        {overlay&&hasCrop&&<>
-          <div style={{position:"absolute",inset:0,background:"rgba(0,0,0,.55)",pointerEvents:"none"}}/>
-          <div style={{
-            position:"absolute",
-            left:overlay.left,top:overlay.top,
-            width:overlay.width,height:overlay.height,
-            boxShadow:"0 0 0 9999px rgba(0,0,0,.55)",
-            border:"2px solid #fff",
-            pointerEvents:"none",
-            borderRadius:2
-          }}/>
-          {/* Corner handles */}
-          {[[0,0],[1,0],[0,1],[1,1]].map(([cx,cy],i)=>(
-            <div key={i} style={{position:"absolute",
-              left:overlay.left+cx*overlay.width-4,
-              top:overlay.top+cy*overlay.height-4,
-              width:12,height:12,
-              border:"3px solid #fff",borderRadius:3,
-              background:"rgba(255,255,255,.2)",
-              pointerEvents:"none"}}/>
-          ))}
-        </>}
-
-        {/* hint when no crop yet */}
-        {!hasCrop&&imgReady&&(
-          <div style={{position:"absolute",bottom:16,left:"50%",transform:"translateX(-50%)",
-            background:"rgba(0,0,0,.6)",backdropFilter:"blur(8px)",
-            color:"rgba(255,255,255,.8)",padding:"8px 18px",borderRadius:20,
-            fontSize:12,fontFamily:"'DM Sans',sans-serif",whiteSpace:"nowrap",
-            pointerEvents:"none",border:"1px solid rgba(255,255,255,.15)"}}>
-            ✂️ Trascina per selezionare l'area
-          </div>
-        )}
-      </div>
-
-      {/* ── BOTTOM BAR ── always visible */}
-      <div style={{flexShrink:0,padding:"12px 16px",
-        paddingBottom:`calc(12px + env(safe-area-inset-bottom))`,
-        background:"rgba(0,0,0,.7)",backdropFilter:"blur(10px)",
-        borderTop:"1px solid rgba(255,255,255,.08)",
-        display:"flex",gap:10}}>
-        {hasCrop&&(
-          <button onClick={()=>{setCropRect(null);}}
-            style={{flex:"0 0 auto",padding:"14px 18px",border:"1px solid rgba(255,255,255,.2)",
-              borderRadius:14,background:"rgba(255,255,255,.08)",color:"rgba(255,255,255,.7)",
-              fontFamily:"'DM Sans',sans-serif",fontSize:13,cursor:"pointer",fontWeight:"500"}}>
-            Azzera
-          </button>
-        )}
-        <button onClick={confirm}
-          style={{flex:1,padding:"14px",border:"none",borderRadius:14,cursor:"pointer",
-            background:hasCrop?C.green:"rgba(255,255,255,.15)",
-            color:hasCrop?"#fff":"rgba(255,255,255,.5)",
-            fontFamily:"'DM Sans',sans-serif",fontSize:14,fontWeight:"600",
-            boxShadow:hasCrop?`0 4px 18px rgba(26,58,42,.5)`:"none",
-            transition:"all .2s ease"}}>
-          {hasCrop?"✂️  Ritaglia e analizza →":"✨  Analizza senza ritaglia →"}
-        </button>
-      </div>
-    </div>
-  );
-}
-
 /* ── REVIEW FORM ── */
-function ReviewForm({form,setForm,fileData,payers,onSave,onCancel,err}){
+function ReviewForm({form,setForm,fileData,payers,onSave,onCancel,onSkip,err,batchIndex,batchTotal}){
   const upd=(k,v)=>setForm(f=>({...f,[k]:v}));
   const updCat=(catId)=>setForm(f=>({...f,categoria:catId,sottocategoria:null}));
   const valid=form.beneficiario&&form.importo&&Number(form.importo)>0;
   const subcats=subcatList(form.categoria);
+  const isBatch=batchTotal>1;
   return(
     <div style={{animation:"fadeUp .25s ease"}}>
+
+      {/* Batch progress header */}
+      {isBatch&&<div style={{background:C.greenLight,border:`1px solid ${C.green}30`,
+        borderRadius:14,padding:"10px 14px",marginBottom:14,
+        display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+        <div style={{display:"flex",alignItems:"center",gap:10}}>
+          <div style={{display:"flex",gap:3}}>
+            {Array.from({length:batchTotal}).map((_,i)=>(
+              <div key={i} style={{width:i<batchIndex?18:i===batchIndex?22:10,height:5,borderRadius:3,
+                transition:"all .3s ease",
+                background:i<batchIndex?C.success:i===batchIndex?C.green:C.border}}/>
+            ))}
+          </div>
+          <span style={{fontSize:11,color:C.green,fontFamily:"'DM Mono',monospace",fontWeight:"600"}}>
+            {batchIndex+1} / {batchTotal}
+          </span>
+        </div>
+        {onSkip&&<button onClick={onSkip}
+          style={{background:"none",border:`1px solid ${C.green}40`,borderRadius:8,
+            padding:"4px 10px",cursor:"pointer",fontSize:11,color:C.greenMid,fontWeight:"500",
+            fontFamily:"'DM Sans',sans-serif"}}>
+          Salta →
+        </button>}
+      </div>}
       {form._cfRilevato&&<div style={{background:C.successLight,border:`1px solid ${C.success}30`,
         borderRadius:12,padding:"10px 14px",marginBottom:14,
         display:"flex",alignItems:"center",gap:8,fontSize:12,color:C.success,fontWeight:"500"}}>
@@ -1423,9 +1316,11 @@ function ReviewForm({form,setForm,fileData,payers,onSave,onCancel,err}){
       <button className="btn-primary" style={{...s.btn(),opacity:valid?1:.4,
         boxShadow:valid?`0 6px 20px rgba(26,58,42,.3)`:"none"}}
         onClick={valid?onSave:undefined} disabled={!valid}>
-        ✅ &nbsp;Salva spesa
+        {isBatch?`✅ Salva e continua →`:"✅ \u00a0Salva spesa"}
       </button>
-      <button className="btn-ghost" style={{...s.btn("ghost"),marginTop:8}} onClick={onCancel}>Annulla</button>
+      <button className="btn-ghost" style={{...s.btn("ghost"),marginTop:8}} onClick={onCancel}>
+        {isBatch?"✕ Annulla tutto il batch":"Annulla"}
+      </button>
     </div>
   );
 }
