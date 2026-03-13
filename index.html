@@ -708,7 +708,6 @@ function App(){
         ];
         setBatchState(newQueue, idx, newQueue.length);
         isSavingRef.current=true;
-      batchAccumulator.current=[];
         const firstForm=forms[0];
         setFileData({...item,_prebuiltForm:firstForm});
         const warn=(!firstForm.beneficiario&&!firstForm.importo)?"⚠️ Estrazione parziale — verifica i campi":null;
@@ -805,7 +804,6 @@ function App(){
         }));
         setBatchState(syntheticItems, 0, syntheticItems.length);
         isSavingRef.current=true;
-      batchAccumulator.current=[];
         setFileData(syntheticItems[0]);
         const firstForm=forms[0];
         const warn=(!firstForm.beneficiario&&!firstForm.importo)?"⚠️ Estrazione parziale — verifica i campi":null;
