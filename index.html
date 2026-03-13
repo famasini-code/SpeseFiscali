@@ -370,7 +370,7 @@ async function analyzeFile(base64,mediaType,apiKey){
     method:"POST",
     headers:{"Content-Type":"application/json","x-api-key":apiKey,
       "anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
-    body:JSON.stringify({model:"claude-opus-4-5",max_tokens:300,messages:[{role:"user",content:[
+    body:JSON.stringify({model:"claude-opus-4-5",max_tokens:600,messages:[{role:"user",content:[
       block,
       {type:"text",text:`Analizza questo documento italiano (ricevuta/scontrino/fattura).
 Cerca codici fiscali: MSNFBA79P07C573G=Fabio, PNTMSS82S50C573K=Melissa, MSNLSN09S04H294X=Alessandro, MSNLRD15H16H294Q=Leonardo.
@@ -383,7 +383,14 @@ Se non leggibile: null per stringhe, 0 per importo.`}
   if(!res.ok){const e=await res.json();throw new Error(e.error?.message||"Errore API");}
   const data=await res.json();
   const txt=data.content?.find(b=>b.type==="text")?.text||"{}";
-  return JSON.parse(txt.replace(/```json|```/g,"").trim());
+  const clean=txt.replace(/```json|```/g,"").trim();
+  // Tenta parse normale, poi tenta recupero JSON troncato
+  try{return JSON.parse(clean);}
+  catch{
+    // Prova a chiudere un JSON troncato aggiungendo }
+    try{return JSON.parse(clean+"}");}
+    catch{return{beneficiario:null,importo:0,data:null,descrizione:null,metodo_pagamento:null,cf_trovato:null};}
+  }
 }
 
 /* ── AI FALLBACK: classifica solo dal testo (Haiku, niente immagine) ── */
