@@ -372,27 +372,32 @@ async function analyzeFile(base64,mediaType,apiKey){
       "anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
     body:JSON.stringify({model:"claude-opus-4-5",max_tokens:600,messages:[{role:"user",content:[
       block,
-      {type:"text",text:`Analizza questo documento italiano (ricevuta/scontrino/fattura).
+      {type:"text",text:`Analizza questa immagine italiana (ricevuta/scontrino/fattura).
+Se ci sono più scontrini/documenti visibili, estraili TUTTI come array.
 Cerca codici fiscali: MSNFBA79P07C573G=Fabio, PNTMSS82S50C573K=Melissa, MSNLSN09S04H294X=Alessandro, MSNLRD15H16H294Q=Leonardo.
-Rispondi SOLO con JSON valido, niente markdown:
-{"beneficiario":"nome esercente","importo":0.00,"data":"YYYY-MM-DD","descrizione":"max 60 car","metodo_pagamento":"tracciabile|contanti|null","cf_trovato":"codice fiscale o null"}
+Rispondi SOLO con JSON valido, niente markdown. Formato array (anche se c'è un solo documento):
+[{"beneficiario":"nome esercente","importo":0.00,"data":"YYYY-MM-DD","descrizione":"max 60 car","metodo_pagamento":"tracciabile|contanti|null","cf_trovato":"codice fiscale o null"}]
 Metodo: "tracciabile" se vedi POS/VISA/MASTERCARD/BANCOMAT/BONIFICO, "contanti" se CONTANTI/CASH, altrimenti null.
-Se non leggibile: null per stringhe, 0 per importo.`}
+Se un campo non è leggibile: null per stringhe, 0 per importo.`}
     ]}]})
   });
   if(!res.ok){const e=await res.json();throw new Error(e.error?.message||"Errore API");}
   const data=await res.json();
-  const raw=data.content?.find(b=>b.type==="text")?.text||"{}";
-  // Estrai il primo oggetto JSON dalla risposta (ignora markdown e testo extra)
-  const match=raw.match(/\{[\s\S]*\}/);
+  const raw=data.content?.find(b=>b.type==="text")?.text||"[]";
+  // Estrai il primo array o oggetto JSON dalla risposta
+  const match=raw.match(/(\[[\s\S]*\]|\{[\s\S]*\})/);
   const clean=match?match[0]:raw;
-  try{return JSON.parse(clean);}
-  catch{
-    // Ultimo tentativo: chiudi JSON troncato
-    try{return JSON.parse(clean+"}");}
-    catch{
+  try{
+    const parsed=JSON.parse(clean);
+    // Normalizza: ritorna sempre un array
+    return Array.isArray(parsed)?parsed:[parsed];
+  }catch{
+    try{
+      const parsed=JSON.parse(clean+"]");
+      return Array.isArray(parsed)?parsed:[parsed];
+    }catch{
       console.warn("AI response non parsabile:",raw.slice(0,200));
-      return{beneficiario:null,importo:0,data:null,descrizione:null,metodo_pagamento:null,cf_trovato:null};
+      return[{beneficiario:null,importo:0,data:null,descrizione:null,metodo_pagamento:null,cf_trovato:null}];
     }
   }
 }
@@ -622,31 +627,59 @@ function App(){
     }
   };
 
+  // Converte un risultato AI grezzo in un oggetto form completo
+  const buildFormFromRaw=async(r)=>{
+    const cls=classifyExpense(r.beneficiario||"",r.descrizione||"");
+    let categoria=cls.categoria;
+    let sottocategoria=cls.sottocategoria;
+    if(cls.confidence==="low"){
+      const aiCls=await classifyWithAI(r.beneficiario||"",r.descrizione||"",apiKey);
+      categoria=aiCls.categoria||"salute";
+      sottocategoria=aiCls.sottocategoria||null;
+    }
+    const cfUpper=(r.cf_trovato||"").toUpperCase().trim();
+    const cfMatch=CF_MAP[cfUpper]||null;
+    return{
+      beneficiario:r.beneficiario||"",importo:r.importo??"",
+      data:r.data||new Date().toISOString().slice(0,10),
+      descrizione:r.descrizione||"",categoria,sottocategoria,
+      metodo_pagamento:r.metodo_pagamento||null,
+      pagante:cfMatch?.type==="pagante"?cfMatch.name:PAYERS[0],
+      riferimento:cfMatch?cfMatch.name:FAMILY[0],
+      _cfRilevato:cfMatch?{name:cfMatch.name,type:cfMatch.type}:null,
+    };
+  };
+
   const analyzeBatchItem=async(item,idx,queue)=>{
     setStep("loading");setErr(null);
     const{base64:b64,mediaType:mt}=item;
     try{
-      const r=await analyzeFile(b64,mt,apiKey);
-      const cls=classifyExpense(r.beneficiario||"",r.descrizione||"");
-      let categoria=cls.categoria;
-      let sottocategoria=cls.sottocategoria;
-      if(cls.confidence==="low"){
-        const aiCls=await classifyWithAI(r.beneficiario||"",r.descrizione||"",apiKey);
-        categoria=aiCls.categoria||"salute";
-        sottocategoria=aiCls.sottocategoria||null;
+      const results=await analyzeFile(b64,mt,apiKey);
+      if(results.length>1){
+        // Foto con più scontrini: costruisci form per ognuno e inseriscili in coda
+        const forms=await Promise.all(results.map(r=>buildFormFromRaw(r)));
+        // Crea item sintetici (stessa immagine, form diversi) e inseriscili dopo quello corrente
+        const syntheticItems=results.map((_,i)=>({...item,_prebuiltForm:forms[i]}));
+        const newQueue=[
+          ...queue.slice(0,idx),
+          ...syntheticItems,
+          ...queue.slice(idx+1)
+        ];
+        setBatchQueue(newQueue);
+        setBatchTotal(newQueue.length);
+        const firstForm=forms[0];
+        setFileData({...item,_prebuiltForm:firstForm});
+        const warn=(!firstForm.beneficiario&&!firstForm.importo)?"⚠️ Estrazione parziale — verifica i campi":null;
+        setForm(firstForm);
+        if(warn)setErr(warn);
+        setStep("review");
+      }else{
+        const form=await buildFormFromRaw(results[0]);
+        const warn=(!form.beneficiario&&!form.importo)?"⚠️ Estrazione parziale — verifica i campi":null;
+        setForm(form);
+        if(warn)setErr(warn);
+        setStep("review");
       }
-      const cfUpper=(r.cf_trovato||"").toUpperCase().trim();
-      const cfMatch=CF_MAP[cfUpper]||null;
-      const warn=(!r.beneficiario&&!r.importo)?"⚠️ Estrazione parziale — verifica i campi":null;
-      setForm({beneficiario:r.beneficiario||"",importo:r.importo??"",
-        data:r.data||new Date().toISOString().slice(0,10),
-        descrizione:r.descrizione||"",categoria,sottocategoria,
-        metodo_pagamento:r.metodo_pagamento||null,
-        pagante:cfMatch?.type==="pagante"?cfMatch.name:PAYERS[0],
-        riferimento:cfMatch?cfMatch.name:FAMILY[0],
-        _cfRilevato:cfMatch?{name:cfMatch.name,type:cfMatch.type}:null});
-      if(warn)setErr(warn);
-      setStep("review");
     }catch(e){
       setErr("Errore AI: "+e.message);
       setForm({beneficiario:"",importo:"",data:new Date().toISOString().slice(0,10),
@@ -663,9 +696,17 @@ function App(){
       setBatchIndex(next);
       const item=batchQueue[next];
       setFileData(item);
-      analyzeBatchItem(item,next,batchQueue);
+      setErr(null);
+      if(item._prebuiltForm){
+        // Già analizzato (scontrino multiplo da stessa foto) — mostra direttamente
+        const warn=(!item._prebuiltForm.beneficiario&&!item._prebuiltForm.importo)?"⚠️ Estrazione parziale — verifica i campi":null;
+        setForm(item._prebuiltForm);
+        if(warn)setErr(warn);
+        setStep("review");
+      }else{
+        analyzeBatchItem(item,next,batchQueue);
+      }
     }else{
-      // batch finito
       setBatchQueue([]);setBatchIndex(0);setBatchTotal(0);
       setStep("idle");setFileData(null);setForm({});
       setPage("archivio");
@@ -676,28 +717,34 @@ function App(){
     setStep("loading");setErr(null);
     const b64=b64Override??fileData?.base64;
     const mt=mtOverride??fileData?.mediaType;
+    const currentFileData=fileData;
     try{
-      const r=await analyzeFile(b64,mt,apiKey);
-      const cls=classifyExpense(r.beneficiario||"",r.descrizione||"");
-      let categoria=cls.categoria;
-      let sottocategoria=cls.sottocategoria;
-      if(cls.confidence==="low"){
-        const aiCls=await classifyWithAI(r.beneficiario||"",r.descrizione||"",apiKey);
-        categoria=aiCls.categoria||"salute";
-        sottocategoria=aiCls.sottocategoria||null;
+      const results=await analyzeFile(b64,mt,apiKey);
+      if(results.length>1){
+        // Più scontrini in una sola immagine → inseriscili nel carosello
+        const forms=await Promise.all(results.map(r=>buildFormFromRaw(r)));
+        const syntheticItems=forms.map(f=>({
+          base64:b64,mediaType:mt,
+          dataUrl:currentFileData?.dataUrl||null,
+          isPdf:currentFileData?.isPdf||false,
+          _prebuiltForm:f
+        }));
+        setBatchQueue(syntheticItems);
+        setBatchTotal(syntheticItems.length);
+        setBatchIndex(0);
+        setFileData(syntheticItems[0]);
+        const firstForm=forms[0];
+        const warn=(!firstForm.beneficiario&&!firstForm.importo)?"⚠️ Estrazione parziale — verifica i campi":null;
+        setForm(firstForm);
+        if(warn)setErr(warn);
+        setStep("review");
+      }else{
+        const form=await buildFormFromRaw(results[0]);
+        const warn=(!form.beneficiario&&!form.importo)?"⚠️ Estrazione parziale — verifica i campi":null;
+        setForm(form);
+        if(warn)setErr(warn);
+        setStep("review");
       }
-      const cfUpper=(r.cf_trovato||"").toUpperCase().trim();
-      const cfMatch=CF_MAP[cfUpper]||null;
-      const warn=(!r.beneficiario&&!r.importo)?"⚠️ Estrazione parziale — verifica i campi":null;
-      setForm({beneficiario:r.beneficiario||"",importo:r.importo??"",
-        data:r.data||new Date().toISOString().slice(0,10),
-        descrizione:r.descrizione||"",categoria,sottocategoria,
-        metodo_pagamento:r.metodo_pagamento||null,
-        pagante:cfMatch?.type==="pagante"?cfMatch.name:PAYERS[0],
-        riferimento:cfMatch?cfMatch.name:FAMILY[0],
-        _cfRilevato:cfMatch?{name:cfMatch.name,type:cfMatch.type}:null});
-      if(warn)setErr(warn);
-      setStep("review");
     }catch(e){
       setErr("Errore AI: "+e.message);
       setForm({beneficiario:"",importo:"",data:new Date().toISOString().slice(0,10),
@@ -872,7 +919,7 @@ function App(){
                 Ricevuta · Scontrino · Fattura · PDF
               </p>
               <input ref={fileRef} type="file" accept="image/*,application/pdf"
-                style={{display:"none"}} onChange={handleFile}/>
+                capture="environment" style={{display:"none"}} onChange={handleFile}/>
               <input ref={batchRef} type="file" accept="image/*,application/pdf"
                 multiple style={{display:"none"}} onChange={handleFile}/>
             </div>
