@@ -606,15 +606,13 @@ function App(){
     finally{setCfSyncing(false);}
   };
 
-  const persistExpenses=async(list)=>{
+  const persistExpenses=async(list,skipCF=false)=>{
     LS.set(KEY_LS,JSON.stringify(list));
-    // Cloudflare (priorità — condiviso tra dispositivi)
-    if(cfService.configured){
-      setCfSyncing(true);
-      try{await cfService.saveExpenses(list);}
-      catch(e){showToast("Cloud sync fallita: "+e.message,"err");}
-      finally{setCfSyncing(false);}
-    }
+    if(skipCF||!cfService.configured)return;
+    setCfSyncing(true);
+    try{await cfService.saveExpenses(list);}
+    catch(e){showToast("Cloud sync fallita: "+e.message,"err");}
+    finally{setCfSyncing(false);}
   };
 
   const handleFile=async e=>{
@@ -761,6 +759,10 @@ function App(){
       setBatchState([],0,0);
       setStep("idle");setFileData(null);setForm({});
       setPage("archivio");
+      // Sync CF una sola volta al termine di tutto il batch
+      if(cfService.configured){
+        persistExpenses(expensesRef.current,false).catch(()=>{});
+      }
     }
   };
 
@@ -843,18 +845,19 @@ function App(){
     }
     const updated=[newExp,...expensesRef.current];
     setExpensesSync(updated);
-    await persistExpenses(updated);
+    const isBatch=batchQueueRef.current.length>1;
+    // Durante il batch: solo localStorage (sincrono, niente CF intermedi)
+    // La sync CF avviene una volta sola al termine del batch in batchNext
+    await persistExpenses(updated, isBatch);
     // Cloudflare: salva doc condiviso solo la prima volta, individuale sempre
-    if(fileData&&cfService.configured){
+    if(fileData&&cfService.configured&&!isBatch){
       if(groupId){
-        // isFirst = nessuna spesa PRECEDENTE usa questo groupId (controllo prima del save)
         const isFirst=!expensesRef.current.slice(1).some(e=>e.sharedDocId===groupId);
         if(isFirst)cfService.saveDocument(`group_${groupId}`,fileData).catch(()=>{});
       }else{
         cfService.saveDocument(id,fileData).catch(()=>{});
       }
     }
-    const isBatch=batchQueueRef.current.length>1;
     if(isBatch){
       const savedN=batchIndexRef.current+1;
       const total=batchQueueRef.current.length;
@@ -1111,7 +1114,7 @@ function App(){
             payers={payers} onSave={editingExpense?saveEditedExpense:saveExpense} err={err}
             isEditing={!!editingExpense}
             batchIndex={batchIndex} batchTotal={batchTotal}
-            onSkip={batchTotal>1?batchNext:null}
+            onSkip={batchTotal>1&&batchIndex<batchTotal-1?batchNext:null}
             onBack={batchTotal>1&&batchIndex>0?batchBack:null}
             onCancel={()=>{
               if(batchTotal>1){isSavingRef.current=false;setBatchState([],0,0);}
