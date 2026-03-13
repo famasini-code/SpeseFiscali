@@ -382,14 +382,18 @@ Se non leggibile: null per stringhe, 0 per importo.`}
   });
   if(!res.ok){const e=await res.json();throw new Error(e.error?.message||"Errore API");}
   const data=await res.json();
-  const txt=data.content?.find(b=>b.type==="text")?.text||"{}";
-  const clean=txt.replace(/```json|```/g,"").trim();
-  // Tenta parse normale, poi tenta recupero JSON troncato
+  const raw=data.content?.find(b=>b.type==="text")?.text||"{}";
+  // Estrai il primo oggetto JSON dalla risposta (ignora markdown e testo extra)
+  const match=raw.match(/\{[\s\S]*\}/);
+  const clean=match?match[0]:raw;
   try{return JSON.parse(clean);}
   catch{
-    // Prova a chiudere un JSON troncato aggiungendo }
+    // Ultimo tentativo: chiudi JSON troncato
     try{return JSON.parse(clean+"}");}
-    catch{return{beneficiario:null,importo:0,data:null,descrizione:null,metodo_pagamento:null,cf_trovato:null};}
+    catch{
+      console.warn("AI response non parsabile:",raw.slice(0,200));
+      return{beneficiario:null,importo:0,data:null,descrizione:null,metodo_pagamento:null,cf_trovato:null};
+    }
   }
 }
 
@@ -525,6 +529,7 @@ function App(){
   const[filterPayer,setFilterPayer]=useState("all");
   const[filterRef,setFilterRef]=useState("all");
   const fileRef=useRef();
+  const batchRef=useRef();
   const payers=PAYERS;
   const curYear=new Date().getFullYear().toString();
 
@@ -632,6 +637,7 @@ function App(){
       }
       const cfUpper=(r.cf_trovato||"").toUpperCase().trim();
       const cfMatch=CF_MAP[cfUpper]||null;
+      const warn=(!r.beneficiario&&!r.importo)?"⚠️ Estrazione parziale — verifica i campi":null;
       setForm({beneficiario:r.beneficiario||"",importo:r.importo??"",
         data:r.data||new Date().toISOString().slice(0,10),
         descrizione:r.descrizione||"",categoria,sottocategoria,
@@ -639,6 +645,7 @@ function App(){
         pagante:cfMatch?.type==="pagante"?cfMatch.name:PAYERS[0],
         riferimento:cfMatch?cfMatch.name:FAMILY[0],
         _cfRilevato:cfMatch?{name:cfMatch.name,type:cfMatch.type}:null});
+      if(warn)setErr(warn);
       setStep("review");
     }catch(e){
       setErr("Errore AI: "+e.message);
@@ -681,6 +688,7 @@ function App(){
       }
       const cfUpper=(r.cf_trovato||"").toUpperCase().trim();
       const cfMatch=CF_MAP[cfUpper]||null;
+      const warn=(!r.beneficiario&&!r.importo)?"⚠️ Estrazione parziale — verifica i campi":null;
       setForm({beneficiario:r.beneficiario||"",importo:r.importo??"",
         data:r.data||new Date().toISOString().slice(0,10),
         descrizione:r.descrizione||"",categoria,sottocategoria,
@@ -688,6 +696,7 @@ function App(){
         pagante:cfMatch?.type==="pagante"?cfMatch.name:PAYERS[0],
         riferimento:cfMatch?cfMatch.name:FAMILY[0],
         _cfRilevato:cfMatch?{name:cfMatch.name,type:cfMatch.type}:null});
+      if(warn)setErr(warn);
       setStep("review");
     }catch(e){
       setErr("Errore AI: "+e.message);
@@ -863,17 +872,15 @@ function App(){
                 Ricevuta · Scontrino · Fattura · PDF
               </p>
               <input ref={fileRef} type="file" accept="image/*,application/pdf"
-                capture="environment" multiple style={{display:"none"}} onChange={handleFile}/>
+                style={{display:"none"}} onChange={handleFile}/>
+              <input ref={batchRef} type="file" accept="image/*,application/pdf"
+                multiple style={{display:"none"}} onChange={handleFile}/>
             </div>
             <button className="btn-primary" style={s.btn()} onClick={()=>fileRef.current.click()}>
               📷 &nbsp;Scatta foto / Carica file
             </button>
             <button className="btn-ghost" style={{...s.btn("ghost"),marginTop:8}}
-              onClick={()=>{
-                const inp=document.createElement("input");
-                inp.type="file";inp.accept="image/*,application/pdf";inp.multiple=true;
-                inp.onchange=handleFile;inp.click();
-              }}>
+              onClick={()=>batchRef.current.click()}>
               📚 &nbsp;Carica più documenti
             </button>
             <button className="btn-ghost" style={{...s.btn("ghost"),marginTop:8}} onClick={()=>{
