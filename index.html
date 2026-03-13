@@ -545,6 +545,8 @@ function App(){
   const[batchIndex,setBatchIndex]=useState(0);
   const batchIndexRef=useRef(0);
   const[batchTotal,setBatchTotal]=useState(0);
+  // Accumula le spese salvate durante il batch — scritte tutte insieme alla fine
+  const batchAccumulator=useRef([]);
   const setBatchState=(queue,index,total)=>{
     batchQueueRef.current=queue;
     batchIndexRef.current=index;
@@ -611,9 +613,9 @@ function App(){
     finally{setCfSyncing(false);}
   };
 
-  const persistExpenses=async(list,skipCF=false)=>{
+  const persistExpenses=async(list)=>{
     LS.set(KEY_LS,JSON.stringify(list));
-    if(skipCF||!cfService.configured)return;
+    if(!cfService.configured)return;
     setCfSyncing(true);
     try{await cfService.saveExpenses(list);}
     catch(e){showToast("Cloud sync fallita: "+e.message,"err");}
@@ -653,6 +655,7 @@ function App(){
       }));
       setBatchState(items, 0, items.length);
       isSavingRef.current=true;
+      batchAccumulator.current=[];
       setFileData(items[0]);
       analyzeBatchItem(items[0],0,items);
     }
@@ -705,6 +708,7 @@ function App(){
         ];
         setBatchState(newQueue, idx, newQueue.length);
         isSavingRef.current=true;
+      batchAccumulator.current=[];
         const firstForm=forms[0];
         setFileData({...item,_prebuiltForm:firstForm});
         const warn=(!firstForm.beneficiario&&!firstForm.importo)?"⚠️ Estrazione parziale — verifica i campi":null;
@@ -760,17 +764,24 @@ function App(){
         analyzeBatchItem(item,next,queue);
       }
     }else{
+      // Fine batch — committa tutte le spese accumulate in una sola operazione
+      const accumulated=batchAccumulator.current;
+      batchAccumulator.current=[];
       isSavingRef.current=false;
       setBatchState([],0,0);
       setStep("idle");setFileData(null);setForm({});
+      if(accumulated.length>0){
+        // Scrivi tutto in un colpo: accumulato + spese preesistenti
+        const final=[...accumulated,...expensesRef.current];
+        setExpensesSync(final);
+        LS.set(KEY_LS,JSON.stringify(final));
+        if(cfService.configured)persistExpenses(final).catch(()=>{});
+      }
       setPage("archivio");
       const now=new Date();
       setLastSaved(now);
       LS.set("sf:lastSaved",now.toISOString());
-      // Sync CF una sola volta al termine di tutto il batch
-      if(cfService.configured){
-        persistExpenses(expensesRef.current,false).catch(()=>{});
-      }
+      showToast(`${accumulated.length} spese salvate ✓`);
     }
   };
 
@@ -794,6 +805,7 @@ function App(){
         }));
         setBatchState(syntheticItems, 0, syntheticItems.length);
         isSavingRef.current=true;
+      batchAccumulator.current=[];
         setFileData(syntheticItems[0]);
         const firstForm=forms[0];
         const warn=(!firstForm.beneficiario&&!firstForm.importo)?"⚠️ Estrazione parziale — verifica i campi":null;
@@ -834,47 +846,44 @@ function App(){
     if(!form.beneficiario||!form.importo)return;
     const id=Date.now();
     const groupId=fileData?.sharedDocGroupId||null;
-    // hasDoc=true, sharedDocId=groupId se immagine condivisa, altrimenti storage individuale
     const newExp={...form,id,docType:fileData?.mediaType||null,hasDoc:!!fileData,
       sharedDocId:groupId||null};
+    // Salva immagine in localStorage (sincrono)
     if(fileData){
       if(groupId){
-        // Salva l'immagine solo la prima volta (se non già salvata)
         const gKey=sharedImgKey(groupId);
         if(!LS.get(gKey)){
           try{LS.set(gKey,JSON.stringify({dataUrl:fileData.dataUrl,base64:fileData.base64,
             mediaType:fileData.mediaType,isPdf:fileData.isPdf}));}catch{}
         }
       }else{
-        // Immagine singola — storage individuale come prima
         try{LS.set(imgKey(id),JSON.stringify({dataUrl:fileData.dataUrl,base64:fileData.base64,
           mediaType:fileData.mediaType,isPdf:fileData.isPdf}));}catch{}
       }
     }
-    const updated=[newExp,...expensesRef.current];
-    setExpensesSync(updated);
     const isBatch=batchQueueRef.current.length>1;
-    // Durante il batch: solo localStorage (sincrono, niente CF intermedi)
-    // La sync CF avviene una volta sola al termine del batch in batchNext
-    await persistExpenses(updated, isBatch);
-    // Cloudflare: salva doc condiviso solo la prima volta, individuale sempre
-    if(fileData&&cfService.configured&&!isBatch){
-      if(groupId){
-        const isFirst=!expensesRef.current.slice(1).some(e=>e.sharedDocId===groupId);
-        if(isFirst)cfService.saveDocument(`group_${groupId}`,fileData).catch(()=>{});
-      }else{
-        cfService.saveDocument(id,fileData).catch(()=>{});
-      }
-    }
     if(isBatch){
+      // BATCH: accumula in un ref, NON toccare expensesRef né React state
+      batchAccumulator.current.push(newExp);
       const savedN=batchIndexRef.current+1;
       const total=batchQueueRef.current.length;
       showToast(`Spesa ${savedN}/${total} salvata ✓`);
       batchNext();
     }else{
+      // SINGOLO: comportamento normale
+      const updated=[newExp,...expensesRef.current];
+      setExpensesSync(updated);
+      await persistExpenses(updated);
+      if(fileData&&cfService.configured){
+        if(groupId){
+          const isFirst=!expensesRef.current.slice(1).some(e=>e.sharedDocId===groupId);
+          if(isFirst)cfService.saveDocument(`group_${groupId}`,fileData).catch(()=>{});
+        }else{
+          cfService.saveDocument(id,fileData).catch(()=>{});
+        }
+      }
       const now=new Date();
-      setLastSaved(now);
-      LS.set("sf:lastSaved",now.toISOString());
+      setLastSaved(now);LS.set("sf:lastSaved",now.toISOString());
       showToast(fileData?"Spesa e allegato salvati ✓":"Spesa salvata ✓");
       setStep("idle");setFileData(null);setForm({});setPage("archivio");
     }
@@ -882,7 +891,11 @@ function App(){
 
   const saveExpense=async()=>{
     if(!form.beneficiario||!form.importo)return;
-    const suspects=findDuplicates(form,expensesRef.current);
+    // Durante il batch, controlla duplicati anche nelle spese già accumulate
+    const searchIn=batchQueueRef.current.length>1
+      ?[...batchAccumulator.current,...expensesRef.current]
+      :expensesRef.current;
+    const suspects=findDuplicates(form,searchIn);
     if(suspects.length>0){
       setDuplicateWarning({
         suspects,
