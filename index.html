@@ -535,6 +535,11 @@ function App(){
   const[cfConfigured,setCfConfigured]=useState(()=>!!LS.get(KEY_CF_SECRET)?.value);
   const[cfSyncing,setCfSyncing]=useState(false);
   const[duplicateWarning,setDuplicateWarning]=useState(null);
+  const[lastSaved,setLastSaved]=useState(()=>{
+    // Leggi dal localStorage se esiste
+    const v=LS.get("sf:lastSaved")?.value;
+    return v?new Date(v):null;
+  });
   const[batchQueue,setBatchQueue]=useState([]);
   const batchQueueRef=useRef([]);
   const[batchIndex,setBatchIndex]=useState(0);
@@ -759,6 +764,9 @@ function App(){
       setBatchState([],0,0);
       setStep("idle");setFileData(null);setForm({});
       setPage("archivio");
+      const now=new Date();
+      setLastSaved(now);
+      LS.set("sf:lastSaved",now.toISOString());
       // Sync CF una sola volta al termine di tutto il batch
       if(cfService.configured){
         persistExpenses(expensesRef.current,false).catch(()=>{});
@@ -864,6 +872,9 @@ function App(){
       showToast(`Spesa ${savedN}/${total} salvata ✓`);
       batchNext();
     }else{
+      const now=new Date();
+      setLastSaved(now);
+      LS.set("sf:lastSaved",now.toISOString());
       showToast(fileData?"Spesa e allegato salvati ✓":"Spesa salvata ✓");
       setStep("idle");setFileData(null);setForm({});setPage("archivio");
     }
@@ -873,7 +884,34 @@ function App(){
     if(!form.beneficiario||!form.importo)return;
     const suspects=findDuplicates(form,expensesRef.current);
     if(suspects.length>0){
-      setDuplicateWarning({suspects,onConfirm:()=>{setDuplicateWarning(null);doSave();},onCancel:()=>setDuplicateWarning(null)});
+      setDuplicateWarning({
+        suspects,
+        // Rivedi: chiude il modale, rimani nel form
+        onCancel:()=>setDuplicateWarning(null),
+        // Salva comunque: aggiunge senza toccare i vecchi
+        onConfirm:()=>{setDuplicateWarning(null);doSave();},
+        // Scarta: chiude modale e avanza nel batch (o torna a idle)
+        onDiscard:()=>{
+          setDuplicateWarning(null);
+          const isBatch=batchQueueRef.current.length>1;
+          if(isBatch){showToast("Spesa scartata");batchNext();}
+          else{setStep("idle");setFileData(null);setForm({});}
+        },
+        // Sovrascrivi: elimina il vecchio duplicato, salva il nuovo
+        onOverwrite:()=>{
+          setDuplicateWarning(null);
+          const toReplace=suspects[0];
+          // Rimuovi il vecchio dal ref prima di doSave (che aggiungerà il nuovo)
+          const without=expensesRef.current.filter(e=>e.id!==toReplace.id);
+          setExpensesSync(without);
+          LS.del(imgKey(toReplace.id));
+          if(toReplace.sharedDocId){
+            const stillUsed=without.some(e=>e.sharedDocId===toReplace.sharedDocId);
+            if(!stillUsed)LS.del(sharedImgKey(toReplace.sharedDocId));
+          }
+          doSave();
+        },
+      });
       return;
     }
     await doSave();
@@ -985,17 +1023,26 @@ function App(){
                 </div>
               ))}
             </div>
-            <p style={{fontSize:12,color:C.muted,marginBottom:16,lineHeight:1.5}}>
-              Vuoi salvare comunque o annullare?
-            </p>
-            <button className="btn-primary" style={{...s.btn(),marginBottom:8,
-              background:C.danger,boxShadow:`0 4px 14px rgba(185,28,28,.25)`}}
-              onClick={duplicateWarning.onConfirm}>
-              Salva comunque
-            </button>
-            <button className="btn-ghost" style={s.btn("ghost")} onClick={duplicateWarning.onCancel}>
-              Annulla — rivedi la spesa
-            </button>
+            <div style={{display:"flex",flexDirection:"column",gap:8}}>
+              <button className="btn-ghost" style={s.btn("ghost")} onClick={duplicateWarning.onCancel}>
+                ✏️ &nbsp;Rivedi la spesa
+              </button>
+              <button className="btn-ghost" style={{...s.btn("ghost"),color:C.danger,borderColor:`${C.danger}40`}}
+                onClick={duplicateWarning.onDiscard}>
+                🗑 &nbsp;Scarta questa spesa
+              </button>
+              {duplicateWarning.suspects.length===1&&(
+                <button className="btn-ghost" style={{...s.btn("ghost"),color:C.info,borderColor:`${C.info}40`}}
+                  onClick={duplicateWarning.onOverwrite}>
+                  🔄 &nbsp;Sovrascrivi la precedente
+                </button>
+              )}
+              <button className="btn-primary" style={{...s.btn(),
+                background:C.danger,boxShadow:`0 4px 14px rgba(185,28,28,.25)`}}
+                onClick={duplicateWarning.onConfirm}>
+                Salva comunque (tieni entrambe)
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -1015,6 +1062,9 @@ function App(){
                   background:cfSyncing?C.gold:cfConfigured?C.success:C.border,
                   display:"inline-block",animation:cfSyncing?"pulse 1s infinite":undefined}}/>
               </div>
+              {lastSaved&&<div style={{fontSize:9,color:C.mutedLight,fontFamily:"'DM Mono',monospace",marginTop:2}}>
+                aggiornato {lastSaved.toLocaleDateString("it-IT",{day:"2-digit",month:"2-digit",year:"2-digit"})} {lastSaved.toLocaleTimeString("it-IT",{hour:"2-digit",minute:"2-digit"})}
+              </div>}
             </div>
           </div>
           <button onClick={()=>{setPage("impostazioni");setDetail(null);}}
