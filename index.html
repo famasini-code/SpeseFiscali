@@ -781,8 +781,7 @@ function App(){
       const now=new Date();
       setLastSaved(now);
       LS.set("sf:lastSaved",now.toISOString());
-      // DEBUG: mostra cosa è stato accumulato e cosa c'era già
-      showToast(`Fine: ${accumulated.length} nuove + ${expensesRef.current.length} preesistenti = ${(accumulated.length+expensesRef.current.length)} tot`,"info");
+      showToast(`${accumulated.length} spese salvate ✓`);
     }
   };
 
@@ -868,8 +867,7 @@ function App(){
       batchAccumulator.current.push(newExp);
       const savedN=batchIndexRef.current+1;
       const total=batchQueueRef.current.length;
-      // DEBUG: mostra quante spese sono nell'accumulatore
-      showToast(`Spesa ${savedN}/${total} ✓ [acc:${batchAccumulator.current.length}]`);
+      showToast(`Spesa ${savedN}/${total} salvata ✓`);
       batchNext();
     }else{
       // SINGOLO: comportamento normale
@@ -932,7 +930,46 @@ function App(){
     await doSave();
   };
 
-  const[editingExpense,setEditingExpense]=useState(null);
+  // Salva il form corrente + tutti i rimanenti nel batch senza ulteriori conferme
+  const saveAll=async()=>{
+    if(!form.beneficiario||!form.importo)return;
+    const queue=batchQueueRef.current;
+    const currentIdx=batchIndexRef.current;
+    // Accumula il form corrente
+    const id=Date.now();
+    const groupId=fileData?.sharedDocGroupId||null;
+    const currentExp={...form,id,docType:fileData?.mediaType||null,hasDoc:!!fileData,sharedDocId:groupId||null};
+    if(fileData){
+      if(groupId){const gKey=sharedImgKey(groupId);if(!LS.get(gKey)){try{LS.set(gKey,JSON.stringify({dataUrl:fileData.dataUrl,base64:fileData.base64,mediaType:fileData.mediaType,isPdf:fileData.isPdf}));}catch{}}}
+      else{try{LS.set(imgKey(id),JSON.stringify({dataUrl:fileData.dataUrl,base64:fileData.base64,mediaType:fileData.mediaType,isPdf:fileData.isPdf}));}catch{}}
+    }
+    batchAccumulator.current.push(currentExp);
+    // Accumula tutti i rimanenti usando i _prebuiltForm
+    for(let i=currentIdx+1;i<queue.length;i++){
+      const item=queue[i];
+      const f=item._prebuiltForm;
+      if(!f||!f.beneficiario||!f.importo)continue; // salta incompleti
+      const rid=Date.now()+(i*10);
+      const rGroupId=item.sharedDocGroupId||null;
+      const exp={...f,id:rid,docType:item.mediaType||null,hasDoc:!!item.base64,sharedDocId:rGroupId||null};
+      if(rGroupId){const gKey=sharedImgKey(rGroupId);if(!LS.get(gKey)){try{LS.set(gKey,JSON.stringify({dataUrl:item.dataUrl,base64:item.base64,mediaType:item.mediaType,isPdf:item.isPdf}));}catch{}}}
+      else if(item.base64){try{LS.set(imgKey(rid),JSON.stringify({dataUrl:item.dataUrl,base64:item.base64,mediaType:item.mediaType,isPdf:item.isPdf}));}catch{}}
+      batchAccumulator.current.push(exp);
+    }
+    // Commit atomico
+    const accumulated=batchAccumulator.current;
+    batchAccumulator.current=[];
+    isSavingRef.current=false;
+    setBatchState([],0,0);
+    setStep("idle");setFileData(null);setForm({});
+    const final=[...accumulated,...expensesRef.current];
+    setExpensesSync(final);
+    LS.set(KEY_LS,JSON.stringify(final));
+    if(cfService.configured)persistExpenses(final).catch(()=>{});
+    setPage("archivio");
+    const now=new Date();setLastSaved(now);LS.set("sf:lastSaved",now.toISOString());
+    showToast(`${accumulated.length} spese salvate ✓`);
+  };
 
   const editExpense=(expense)=>{
     // Carica la spesa nel form e vai in modalità edit
@@ -1178,6 +1215,7 @@ function App(){
           {step==="review"&&<ReviewForm form={form} setForm={setForm} fileData={fileData}
             payers={payers} onSave={editingExpense?saveEditedExpense:saveExpense} err={err}
             isEditing={!!editingExpense}
+            onSaveAll={!editingExpense&&batchTotal>1?saveAll:null}
             batchIndex={batchIndex} batchTotal={batchTotal}
             onSkip={batchTotal>1&&batchIndex<batchTotal-1?batchNext:null}
             onBack={batchTotal>1&&batchIndex>0?batchBack:null}
@@ -1426,7 +1464,7 @@ function DetailView({expense,onBack,onDelete,onEdit}){
 }
 
 /* ── REVIEW FORM ── */
-function ReviewForm({form,setForm,fileData,payers,onSave,onCancel,onSkip,onBack,err,batchIndex,batchTotal,isEditing}){
+function ReviewForm({form,setForm,fileData,payers,onSave,onSaveAll,onCancel,onSkip,onBack,err,batchIndex,batchTotal,isEditing}){
   const upd=(k,v)=>setForm(f=>({...f,[k]:v}));
   const updCat=(catId)=>setForm(f=>({...f,categoria:catId,sottocategoria:null}));
   const valid=form.beneficiario&&form.importo&&Number(form.importo)>0;
@@ -1611,6 +1649,11 @@ function ReviewForm({form,setForm,fileData,payers,onSave,onCancel,onSkip,onBack,
         onClick={valid?onSave:undefined} disabled={!valid}>
         {isEditing?"✅  Salva modifiche":isBatch?"✅ Salva e continua →":"✅  Salva spesa"}
       </button>
+      {isBatch&&onSaveAll&&<button className="btn-ghost" style={{...s.btn("secondary"),marginTop:8,
+        opacity:valid?1:.4}}
+        onClick={valid?onSaveAll:undefined} disabled={!valid}>
+        ⚡ Salva tutti ({batchTotal - batchIndex} rimanenti)
+      </button>}
       <button className="btn-ghost" style={{...s.btn("ghost"),marginTop:8}} onClick={onCancel}>
         {isBatch?"✕ Annulla tutto il batch":"Annulla"}
       </button>
