@@ -55,6 +55,7 @@ const KEY_CF_URL='sf:cf_url';
 const KEY_CF_SECRET='sf:cf_secret';
 const CF_WORKER_URL='https://odd-tree-5094.fa-masini.workers.dev';
 const imgKey=id=>`sf:img:${id}`;
+const sharedImgKey=groupId=>`sf:img:group:${groupId}`;
 const PAYERS=["Fabio","Melissa"];
 const FAMILY=["Fabio","Melissa","Alessandro","Leonardo"];
 const CF_MAP={
@@ -515,6 +516,12 @@ function SetupScreen({onSave}){
 function App(){
   const[apiKey,setApiKey]=useState(()=>LS.get(KEY_APIKEY)?.value||null);
   const[expenses,setExpenses]=useState([]);
+  const expensesRef=useRef([]);
+  const setExpensesSync=(val)=>{
+    const next=typeof val==="function"?val(expensesRef.current):val;
+    expensesRef.current=next;
+    setExpenses(next);
+  };
   const[page,setPage]=useState("registra");
   const[step,setStep]=useState("idle");
   const[fileData,setFileData]=useState(null);
@@ -552,7 +559,7 @@ function App(){
       cfService.loadExpenses()
         .then(data=>{
           if(data.length>0){
-            setExpenses(data);
+            setExpensesSync(data);
             LS.set(KEY_LS,JSON.stringify(data));
           }
         })
@@ -563,7 +570,7 @@ function App(){
 
   useEffect(()=>{
     const res=LS.get(KEY_LS);
-    if(res?.value)try{setExpenses(JSON.parse(res.value));}catch{}
+    if(res?.value)try{setExpensesSync(JSON.parse(res.value));}catch{}
     setLoading(false);
   },[]);
 
@@ -572,7 +579,7 @@ function App(){
     setCfSyncing(true);
     try{
       const data=await cfService.loadExpenses();
-      if(data.length>0){setExpenses(data);LS.set(KEY_LS,JSON.stringify(data));showToast(`Cloud: ${data.length} spese caricate`,"info");}
+      if(data.length>0){setExpensesSync(data);LS.set(KEY_LS,JSON.stringify(data));showToast(`Cloud: ${data.length} spese caricate`,"info");}
     }catch(e){showToast("Errore sync Cloud: "+e.message,"err");}
     finally{setCfSyncing(false);}
   };
@@ -659,7 +666,8 @@ function App(){
         // Foto con più scontrini: costruisci form per ognuno e inseriscili in coda
         const forms=await Promise.all(results.map(r=>buildFormFromRaw(r)));
         // Crea item sintetici (stessa immagine, form diversi) e inseriscili dopo quello corrente
-        const syntheticItems=results.map((_,i)=>({...item,_prebuiltForm:forms[i]}));
+        const groupId=Date.now();
+        const syntheticItems=results.map((_,i)=>({...item,_prebuiltForm:forms[i],sharedDocGroupId:groupId}));
         const newQueue=[
           ...queue.slice(0,idx),
           ...syntheticItems,
@@ -687,6 +695,20 @@ function App(){
         pagante:PAYERS[0],riferimento:FAMILY[0]});
       setStep("review");
     }
+  };
+
+  // Torna al documento precedente nel batch
+  const batchBack=()=>{
+    const prev=batchIndex-1;
+    if(prev<0)return;
+    setBatchIndex(prev);
+    const item=batchQueue[prev];
+    setFileData(item);
+    setErr(null);
+    // Tutti i documenti nel batch hanno già _prebuiltForm o sono stati già analizzati
+    const f=item._prebuiltForm||null;
+    if(f){setForm(f);setStep("review");}
+    else{analyzeBatchItem(item,prev,batchQueue);}
   };
 
   // Avanza al prossimo documento nel batch (o chiude)
@@ -723,10 +745,12 @@ function App(){
       if(results.length>1){
         // Più scontrini in una sola immagine → inseriscili nel carosello
         const forms=await Promise.all(results.map(r=>buildFormFromRaw(r)));
+        const groupId=Date.now(); // ID condiviso per l'immagine comune
         const syntheticItems=forms.map(f=>({
           base64:b64,mediaType:mt,
           dataUrl:currentFileData?.dataUrl||null,
           isPdf:currentFileData?.isPdf||false,
+          sharedDocGroupId:groupId,
           _prebuiltForm:f
         }));
         setBatchQueue(syntheticItems);
@@ -771,14 +795,37 @@ function App(){
   const doSave=async()=>{
     if(!form.beneficiario||!form.importo)return;
     const id=Date.now();
-    const newExp={...form,id,docType:fileData?.mediaType||null,hasDoc:!!fileData};
+    const groupId=fileData?.sharedDocGroupId||null;
+    // hasDoc=true, sharedDocId=groupId se immagine condivisa, altrimenti storage individuale
+    const newExp={...form,id,docType:fileData?.mediaType||null,hasDoc:!!fileData,
+      sharedDocId:groupId||null};
     if(fileData){
-      try{LS.set(imgKey(id),JSON.stringify({dataUrl:fileData.dataUrl,base64:fileData.base64,mediaType:fileData.mediaType,isPdf:fileData.isPdf}));}catch{}
+      if(groupId){
+        // Salva l'immagine solo la prima volta (se non già salvata)
+        const gKey=sharedImgKey(groupId);
+        if(!LS.get(gKey)){
+          try{LS.set(gKey,JSON.stringify({dataUrl:fileData.dataUrl,base64:fileData.base64,
+            mediaType:fileData.mediaType,isPdf:fileData.isPdf}));}catch{}
+        }
+      }else{
+        // Immagine singola — storage individuale come prima
+        try{LS.set(imgKey(id),JSON.stringify({dataUrl:fileData.dataUrl,base64:fileData.base64,
+          mediaType:fileData.mediaType,isPdf:fileData.isPdf}));}catch{}
+      }
     }
-    const updated=[newExp,...expenses];
-    setExpenses(updated);
+    const updated=[newExp,...expensesRef.current];
+    setExpensesSync(updated);
     await persistExpenses(updated);
-    if(fileData&&cfService.configured)cfService.saveDocument(id,fileData).catch(()=>{});
+    // Cloudflare: salva doc condiviso solo la prima volta, individuale sempre
+    if(fileData&&cfService.configured){
+      if(groupId){
+        // Usa groupId come chiave CF — salva solo al primo documento del gruppo
+        const isFirst=!expensesRef.current.some(e=>e.sharedDocId===groupId);
+        if(isFirst)cfService.saveDocument(`group_${groupId}`,fileData).catch(()=>{});
+      }else{
+        cfService.saveDocument(id,fileData).catch(()=>{});
+      }
+    }
     const isBatch=batchTotal>1;
     if(isBatch){
       showToast(`Spesa ${batchIndex+1}/${batchTotal} salvata ✓`);
@@ -801,7 +848,7 @@ function App(){
 
   const deleteExpense=async id=>{
     const updated=expenses.filter(e=>e.id!==id);
-    setExpenses(updated);LS.del(imgKey(id));
+    setExpensesSync(updated);LS.del(imgKey(id));
     await persistExpenses(updated);
     if(cfService.configured)cfService.deleteDocument(id).catch(()=>{});
     showToast("Spesa eliminata","err");setDetail(null);
@@ -986,7 +1033,9 @@ function App(){
 
           {step==="review"&&<ReviewForm form={form} setForm={setForm} fileData={fileData}
             payers={payers} onSave={saveExpense} err={err}
-            batchIndex={batchIndex} batchTotal={batchTotal} onSkip={batchTotal>1?batchNext:null}
+            batchIndex={batchIndex} batchTotal={batchTotal}
+            onSkip={batchTotal>1?batchNext:null}
+            onBack={batchTotal>1&&batchIndex>0?batchBack:null}
             onCancel={()=>{
               if(batchTotal>1){setBatchQueue([]);setBatchIndex(0);setBatchTotal(0);}
               setStep("idle");setFileData(null);setForm({});
@@ -1128,9 +1177,20 @@ function DetailView({expense,onBack,onDelete}){
   const[doc,setDoc]=useState(null);const[loadingDoc,setLoadingDoc]=useState(false);
   useEffect(()=>{
     if(!expense?.hasDoc)return;
-    // 1. Prova localStorage
+    // 1. Prova chiave individuale in localStorage
     try{const r=LS.get(imgKey(expense.id));if(r?.value){setDoc(JSON.parse(r.value));return;}}catch{}
-    // 2. Prova Cloudflare
+    // 2. Prova chiave condivisa (immagine multi-scontrino)
+    if(expense.sharedDocId){
+      try{const r=LS.get(sharedImgKey(expense.sharedDocId));if(r?.value){setDoc(JSON.parse(r.value));return;}}catch{}
+      // 3. Prova Cloudflare con chiave condivisa
+      setLoadingDoc(true);
+      cfService.loadDocument(`group_${expense.sharedDocId}`)
+        .then(d=>{if(d)setDoc(d);})
+        .catch(()=>{})
+        .finally(()=>setLoadingDoc(false));
+      return;
+    }
+    // 4. Prova Cloudflare con chiave individuale
     setLoadingDoc(true);
     cfService.loadDocument(expense.id)
       .then(d=>{if(d)setDoc(d);})
@@ -1215,7 +1275,7 @@ function DetailView({expense,onBack,onDelete}){
 }
 
 /* ── REVIEW FORM ── */
-function ReviewForm({form,setForm,fileData,payers,onSave,onCancel,onSkip,err,batchIndex,batchTotal}){
+function ReviewForm({form,setForm,fileData,payers,onSave,onCancel,onSkip,onBack,err,batchIndex,batchTotal}){
   const upd=(k,v)=>setForm(f=>({...f,[k]:v}));
   const updCat=(catId)=>setForm(f=>({...f,categoria:catId,sottocategoria:null}));
   const valid=form.beneficiario&&form.importo&&Number(form.importo)>0;
@@ -1226,26 +1286,35 @@ function ReviewForm({form,setForm,fileData,payers,onSave,onCancel,onSkip,err,bat
 
       {/* Batch progress header */}
       {isBatch&&<div style={{background:C.greenLight,border:`1px solid ${C.green}30`,
-        borderRadius:14,padding:"10px 14px",marginBottom:14,
-        display:"flex",alignItems:"center",justifyContent:"space-between"}}>
-        <div style={{display:"flex",alignItems:"center",gap:10}}>
-          <div style={{display:"flex",gap:3}}>
-            {Array.from({length:batchTotal}).map((_,i)=>(
-              <div key={i} style={{width:i<batchIndex?18:i===batchIndex?22:10,height:5,borderRadius:3,
-                transition:"all .3s ease",
-                background:i<batchIndex?C.success:i===batchIndex?C.green:C.border}}/>
-            ))}
+        borderRadius:14,padding:"10px 14px",marginBottom:14}}>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+          <div style={{display:"flex",alignItems:"center",gap:10}}>
+            <div style={{display:"flex",gap:3}}>
+              {Array.from({length:batchTotal}).map((_,i)=>(
+                <div key={i} style={{width:i<batchIndex?18:i===batchIndex?22:10,height:5,borderRadius:3,
+                  transition:"all .3s ease",
+                  background:i<batchIndex?C.success:i===batchIndex?C.green:C.border}}/>
+              ))}
+            </div>
+            <span style={{fontSize:11,color:C.green,fontFamily:"'DM Mono',monospace",fontWeight:"600"}}>
+              {batchIndex+1} / {batchTotal}
+            </span>
           </div>
-          <span style={{fontSize:11,color:C.green,fontFamily:"'DM Mono',monospace",fontWeight:"600"}}>
-            {batchIndex+1} / {batchTotal}
-          </span>
+          <div style={{display:"flex",gap:6}}>
+            {onBack&&<button onClick={onBack}
+              style={{background:"none",border:`1px solid ${C.green}40`,borderRadius:8,
+                padding:"4px 10px",cursor:"pointer",fontSize:11,color:C.greenMid,fontWeight:"500",
+                fontFamily:"'DM Sans',sans-serif"}}>
+              ← Indietro
+            </button>}
+            {onSkip&&<button onClick={onSkip}
+              style={{background:"none",border:`1px solid ${C.green}40`,borderRadius:8,
+                padding:"4px 10px",cursor:"pointer",fontSize:11,color:C.greenMid,fontWeight:"500",
+                fontFamily:"'DM Sans',sans-serif"}}>
+              Avanti →
+            </button>}
+          </div>
         </div>
-        {onSkip&&<button onClick={onSkip}
-          style={{background:"none",border:`1px solid ${C.green}40`,borderRadius:8,
-            padding:"4px 10px",cursor:"pointer",fontSize:11,color:C.greenMid,fontWeight:"500",
-            fontFamily:"'DM Sans',sans-serif"}}>
-          Salta →
-        </button>}
       </div>}
       {form._cfRilevato&&<div style={{background:C.successLight,border:`1px solid ${C.success}30`,
         borderRadius:12,padding:"10px 14px",marginBottom:14,
@@ -1377,7 +1446,7 @@ function ReviewForm({form,setForm,fileData,payers,onSave,onCancel,onSkip,err,bat
       <button className="btn-primary" style={{...s.btn(),opacity:valid?1:.4,
         boxShadow:valid?`0 6px 20px rgba(26,58,42,.3)`:"none"}}
         onClick={valid?onSave:undefined} disabled={!valid}>
-        {isBatch?`✅ Salva e continua →`:"✅ \u00a0Salva spesa"}
+        {isBatch?"✅ Salva e continua →":"✅  Salva spesa"}
       </button>
       <button className="btn-ghost" style={{...s.btn("ghost"),marginTop:8}} onClick={onCancel}>
         {isBatch?"✕ Annulla tutto il batch":"Annulla"}
