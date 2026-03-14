@@ -6,7 +6,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes"/>
 <meta name="apple-mobile-web-app-status-bar-style" content="default"/>
 <meta name="theme-color" content="#F5F1EA"/>
-<title>SpeseFiscali — build 14/03_Ver 7</title>
+<title>SpeseFiscali — build 14/03_Ver 8</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;1,400&family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet"/>
@@ -843,17 +843,18 @@ function App(){
     const groupId=fd?.sharedDocGroupId||null;
     const newExp={...form,id,docType:fd?.mediaType||null,hasDoc:!!fd,
       sharedDocId:groupId||null};
-    // Salva immagine in localStorage (sempre, subito)
+    // Salva immagine in localStorage — solo dataUrl (base64 è ricavabile da essa)
     if(fd){
+      const imgData=JSON.stringify({dataUrl:fd.dataUrl,mediaType:fd.mediaType,isPdf:fd.isPdf});
       if(groupId){
         const gKey=sharedImgKey(groupId);
         if(!LS.get(gKey)){
-          try{LS.set(gKey,JSON.stringify({dataUrl:fd.dataUrl,base64:fd.base64,
-            mediaType:fd.mediaType,isPdf:fd.isPdf}));}catch{}
+          try{LS.set(gKey,imgData);}
+          catch{showToast("⚠️ Spazio esaurito — documento non salvato","err");}
         }
       }else{
-        try{LS.set(imgKey(id),JSON.stringify({dataUrl:fd.dataUrl,base64:fd.base64,
-          mediaType:fd.mediaType,isPdf:fd.isPdf}));}catch{}
+        try{LS.set(imgKey(id),imgData);}
+        catch{showToast("⚠️ Spazio esaurito — documento non salvato","err");}
       }
     }
     const isBatch=batchQueueRef.current.length>1;
@@ -1089,7 +1090,7 @@ function App(){
                 color:C.text,letterSpacing:"-0.02em",lineHeight:1}}>SpeseFiscali</h1>
               <div style={{fontSize:10,color:C.muted,fontFamily:"'DM Mono',monospace",marginTop:3,lineHeight:1.6}}>
                 per dichiarazione redditi<br/>
-                build 14/03_Ver 7
+                build 14/03_Ver 8
               </div>
             </div>
           </div>
@@ -1360,7 +1361,9 @@ function DetailView({expense,onBack,onDelete,onEdit}){
   const downloadDoc=()=>{
     if(!doc)return;
     const a=document.createElement("a");
-    a.href=doc.isPdf?`data:application/pdf;base64,${doc.base64}`:doc.dataUrl||`data:image/jpeg;base64,${doc.base64}`;
+    // base64 potrebbe non essere salvato — ricavalo da dataUrl se necessario
+    const b64=doc.base64||(doc.dataUrl?doc.dataUrl.split(",")[1]:null);
+    a.href=doc.isPdf?`data:application/pdf;base64,${b64}`:doc.dataUrl||`data:image/jpeg;base64,${b64}`;
     a.download=`spesa_${expense.id}.${doc.isPdf?"pdf":"jpg"}`;a.click();
   };
   const cat=CATS.find(c=>c.id===expense.categoria);
