@@ -6,7 +6,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes"/>
 <meta name="apple-mobile-web-app-status-bar-style" content="default"/>
 <meta name="theme-color" content="#F5F1EA"/>
-<title>SpeseFiscali — build 14/03_Ver 6</title>
+<title>SpeseFiscali — build 14/03_Ver 7</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;1,400&family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet"/>
@@ -781,9 +781,9 @@ function App(){
 
   const analyze=async(b64Override,mtOverride)=>{
     setStep("loading");setErr(null);
-    const b64=b64Override??fileData?.base64;
-    const mt=mtOverride??fileData?.mediaType;
-    const currentFileData=fileData;
+    const b64=b64Override??fileDataRef.current?.base64;
+    const mt=mtOverride??fileDataRef.current?.mediaType;
+    const currentFileData=fileDataRef.current;  // ref — sempre aggiornato
     try{
       const results=await analyzeFile(b64,mt,apiKey);
       if(results.length>1){
@@ -1089,7 +1089,7 @@ function App(){
                 color:C.text,letterSpacing:"-0.02em",lineHeight:1}}>SpeseFiscali</h1>
               <div style={{fontSize:10,color:C.muted,fontFamily:"'DM Mono',monospace",marginTop:3,lineHeight:1.6}}>
                 per dichiarazione redditi<br/>
-                build 14/03_Ver 6
+                build 14/03_Ver 7
               </div>
             </div>
           </div>
