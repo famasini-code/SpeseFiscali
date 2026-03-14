@@ -6,7 +6,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes"/>
 <meta name="apple-mobile-web-app-status-bar-style" content="default"/>
 <meta name="theme-color" content="#F5F1EA"/>
-<title>SpeseFiscali — build 14/03_Ver 1</title>
+<title>SpeseFiscali — build 14/03_Ver 2</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;1,400&family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet"/>
@@ -519,6 +519,7 @@ function App(){
   const[expenses,setExpenses]=useState([]);
   const expensesRef=useRef([]);
   const isSavingRef=useRef(false); // blocca CF load durante batch save
+  const batchAccumulator=useRef([]); // accumula spese batch, commit atomico alla fine
   const setExpensesSync=(val)=>{
     const next=typeof val==="function"?val(expensesRef.current):val;
     expensesRef.current=next;
@@ -535,18 +536,11 @@ function App(){
   const[cfConfigured,setCfConfigured]=useState(()=>!!LS.get(KEY_CF_SECRET)?.value);
   const[cfSyncing,setCfSyncing]=useState(false);
   const[duplicateWarning,setDuplicateWarning]=useState(null);
-  const[lastSaved,setLastSaved]=useState(()=>{
-    // Leggi dal localStorage se esiste
-    const v=LS.get("sf:lastSaved")?.value;
-    return v?new Date(v):null;
-  });
   const[batchQueue,setBatchQueue]=useState([]);
   const batchQueueRef=useRef([]);
   const[batchIndex,setBatchIndex]=useState(0);
   const batchIndexRef=useRef(0);
   const[batchTotal,setBatchTotal]=useState(0);
-  // Accumula le spese salvate durante il batch — scritte tutte insieme alla fine
-  const batchAccumulator=useRef([]);
   const setBatchState=(queue,index,total)=>{
     batchQueueRef.current=queue;
     batchIndexRef.current=index;
@@ -615,11 +609,13 @@ function App(){
 
   const persistExpenses=async(list)=>{
     LS.set(KEY_LS,JSON.stringify(list));
-    if(!cfService.configured)return;
-    setCfSyncing(true);
-    try{await cfService.saveExpenses(list);}
-    catch(e){showToast("Cloud sync fallita: "+e.message,"err");}
-    finally{setCfSyncing(false);}
+    // Cloudflare (priorità — condiviso tra dispositivi)
+    if(cfService.configured){
+      setCfSyncing(true);
+      try{await cfService.saveExpenses(list);}
+      catch(e){showToast("Cloud sync fallita: "+e.message,"err");}
+      finally{setCfSyncing(false);}
+    }
   };
 
   const handleFile=async e=>{
@@ -708,6 +704,7 @@ function App(){
         ];
         setBatchState(newQueue, idx, newQueue.length);
         isSavingRef.current=true;
+      batchAccumulator.current=[];
         const firstForm=forms[0];
         setFileData({...item,_prebuiltForm:firstForm});
         const warn=(!firstForm.beneficiario&&!firstForm.importo)?"⚠️ Estrazione parziale — verifica i campi":null;
@@ -763,24 +760,20 @@ function App(){
         analyzeBatchItem(item,next,queue);
       }
     }else{
-      // Fine batch — committa tutte le spese accumulate in una sola operazione
+      // Fine batch — commit atomico di tutto l'accumulato
       const accumulated=batchAccumulator.current;
       batchAccumulator.current=[];
       isSavingRef.current=false;
       setBatchState([],0,0);
       setStep("idle");setFileData(null);setForm({});
       if(accumulated.length>0){
-        // Scrivi tutto in un colpo: accumulato + spese preesistenti
         const final=[...accumulated,...expensesRef.current];
         setExpensesSync(final);
         LS.set(KEY_LS,JSON.stringify(final));
         if(cfService.configured)persistExpenses(final).catch(()=>{});
+        showToast(`${accumulated.length} spese salvate ✓`);
       }
       setPage("archivio");
-      const now=new Date();
-      setLastSaved(now);
-      LS.set("sf:lastSaved",now.toISOString());
-      showToast(`${accumulated.length} spese salvate ✓`);
     }
   };
 
@@ -804,6 +797,7 @@ function App(){
         }));
         setBatchState(syntheticItems, 0, syntheticItems.length);
         isSavingRef.current=true;
+      batchAccumulator.current=[];
         setFileData(syntheticItems[0]);
         const firstForm=forms[0];
         const warn=(!firstForm.beneficiario&&!firstForm.importo)?"⚠️ Estrazione parziale — verifica i campi":null;
@@ -846,7 +840,7 @@ function App(){
     const groupId=fileData?.sharedDocGroupId||null;
     const newExp={...form,id,docType:fileData?.mediaType||null,hasDoc:!!fileData,
       sharedDocId:groupId||null};
-    // Salva immagine in localStorage (sincrono)
+    // Salva immagine in localStorage (sempre, subito)
     if(fileData){
       if(groupId){
         const gKey=sharedImgKey(groupId);
@@ -861,14 +855,14 @@ function App(){
     }
     const isBatch=batchQueueRef.current.length>1;
     if(isBatch){
-      // BATCH: accumula in un ref, NON toccare expensesRef né React state
+      // Accumula senza toccare expensesRef — commit atomico in batchNext alla fine
       batchAccumulator.current.push(newExp);
       const savedN=batchIndexRef.current+1;
       const total=batchQueueRef.current.length;
       showToast(`Spesa ${savedN}/${total} salvata ✓`);
       batchNext();
     }else{
-      // SINGOLO: comportamento normale
+      // Singolo: scrittura normale
       const updated=[newExp,...expensesRef.current];
       setExpensesSync(updated);
       await persistExpenses(updated);
@@ -880,8 +874,6 @@ function App(){
           cfService.saveDocument(id,fileData).catch(()=>{});
         }
       }
-      const now=new Date();
-      setLastSaved(now);LS.set("sf:lastSaved",now.toISOString());
       showToast(fileData?"Spesa e allegato salvati ✓":"Spesa salvata ✓");
       setStep("idle");setFileData(null);setForm({});setPage("archivio");
     }
@@ -889,85 +881,15 @@ function App(){
 
   const saveExpense=async()=>{
     if(!form.beneficiario||!form.importo)return;
-    // Durante il batch, controlla duplicati anche nelle spese già accumulate
-    const searchIn=batchQueueRef.current.length>1
-      ?[...batchAccumulator.current,...expensesRef.current]
-      :expensesRef.current;
-    const suspects=findDuplicates(form,searchIn);
+    const suspects=findDuplicates(form,expensesRef.current);
     if(suspects.length>0){
-      setDuplicateWarning({
-        suspects,
-        // Rivedi: chiude il modale, rimani nel form
-        onCancel:()=>setDuplicateWarning(null),
-        // Salva comunque: aggiunge senza toccare i vecchi
-        onConfirm:()=>{setDuplicateWarning(null);doSave();},
-        // Scarta: chiude modale e avanza nel batch (o torna a idle)
-        onDiscard:()=>{
-          setDuplicateWarning(null);
-          const isBatch=batchQueueRef.current.length>1;
-          if(isBatch){showToast("Spesa scartata");batchNext();}
-          else{setStep("idle");setFileData(null);setForm({});}
-        },
-        // Sovrascrivi: elimina il vecchio duplicato, salva il nuovo
-        onOverwrite:()=>{
-          setDuplicateWarning(null);
-          const toReplace=suspects[0];
-          // Rimuovi il vecchio dal ref prima di doSave (che aggiungerà il nuovo)
-          const without=expensesRef.current.filter(e=>e.id!==toReplace.id);
-          setExpensesSync(without);
-          LS.del(imgKey(toReplace.id));
-          if(toReplace.sharedDocId){
-            const stillUsed=without.some(e=>e.sharedDocId===toReplace.sharedDocId);
-            if(!stillUsed)LS.del(sharedImgKey(toReplace.sharedDocId));
-          }
-          doSave();
-        },
-      });
+      setDuplicateWarning({suspects,onConfirm:()=>{setDuplicateWarning(null);doSave();},onCancel:()=>setDuplicateWarning(null)});
       return;
     }
     await doSave();
   };
 
-  // Salva il form corrente + tutti i rimanenti nel batch senza ulteriori conferme
-  const saveAll=async()=>{
-    if(!form.beneficiario||!form.importo)return;
-    const queue=batchQueueRef.current;
-    const currentIdx=batchIndexRef.current;
-    // Accumula il form corrente
-    const id=Date.now();
-    const groupId=fileData?.sharedDocGroupId||null;
-    const currentExp={...form,id,docType:fileData?.mediaType||null,hasDoc:!!fileData,sharedDocId:groupId||null};
-    if(fileData){
-      if(groupId){const gKey=sharedImgKey(groupId);if(!LS.get(gKey)){try{LS.set(gKey,JSON.stringify({dataUrl:fileData.dataUrl,base64:fileData.base64,mediaType:fileData.mediaType,isPdf:fileData.isPdf}));}catch{}}}
-      else{try{LS.set(imgKey(id),JSON.stringify({dataUrl:fileData.dataUrl,base64:fileData.base64,mediaType:fileData.mediaType,isPdf:fileData.isPdf}));}catch{}}
-    }
-    batchAccumulator.current.push(currentExp);
-    // Accumula tutti i rimanenti usando i _prebuiltForm
-    for(let i=currentIdx+1;i<queue.length;i++){
-      const item=queue[i];
-      const f=item._prebuiltForm;
-      if(!f||!f.beneficiario||!f.importo)continue; // salta incompleti
-      const rid=Date.now()+(i*10);
-      const rGroupId=item.sharedDocGroupId||null;
-      const exp={...f,id:rid,docType:item.mediaType||null,hasDoc:!!item.base64,sharedDocId:rGroupId||null};
-      if(rGroupId){const gKey=sharedImgKey(rGroupId);if(!LS.get(gKey)){try{LS.set(gKey,JSON.stringify({dataUrl:item.dataUrl,base64:item.base64,mediaType:item.mediaType,isPdf:item.isPdf}));}catch{}}}
-      else if(item.base64){try{LS.set(imgKey(rid),JSON.stringify({dataUrl:item.dataUrl,base64:item.base64,mediaType:item.mediaType,isPdf:item.isPdf}));}catch{}}
-      batchAccumulator.current.push(exp);
-    }
-    // Commit atomico
-    const accumulated=batchAccumulator.current;
-    batchAccumulator.current=[];
-    isSavingRef.current=false;
-    setBatchState([],0,0);
-    setStep("idle");setFileData(null);setForm({});
-    const final=[...accumulated,...expensesRef.current];
-    setExpensesSync(final);
-    LS.set(KEY_LS,JSON.stringify(final));
-    if(cfService.configured)persistExpenses(final).catch(()=>{});
-    setPage("archivio");
-    const now=new Date();setLastSaved(now);LS.set("sf:lastSaved",now.toISOString());
-    showToast(`${accumulated.length} spese salvate ✓`);
-  };
+  const[editingExpense,setEditingExpense]=useState(null);
 
   const editExpense=(expense)=>{
     // Carica la spesa nel form e vai in modalità edit
@@ -1073,26 +995,17 @@ function App(){
                 </div>
               ))}
             </div>
-            <div style={{display:"flex",flexDirection:"column",gap:8}}>
-              <button className="btn-ghost" style={s.btn("ghost")} onClick={duplicateWarning.onCancel}>
-                ✏️ &nbsp;Rivedi la spesa
-              </button>
-              <button className="btn-ghost" style={{...s.btn("ghost"),color:C.danger,borderColor:`${C.danger}40`}}
-                onClick={duplicateWarning.onDiscard}>
-                🗑 &nbsp;Scarta questa spesa
-              </button>
-              {duplicateWarning.suspects.length===1&&(
-                <button className="btn-ghost" style={{...s.btn("ghost"),color:C.info,borderColor:`${C.info}40`}}
-                  onClick={duplicateWarning.onOverwrite}>
-                  🔄 &nbsp;Sovrascrivi la precedente
-                </button>
-              )}
-              <button className="btn-primary" style={{...s.btn(),
-                background:C.danger,boxShadow:`0 4px 14px rgba(185,28,28,.25)`}}
-                onClick={duplicateWarning.onConfirm}>
-                Salva comunque (tieni entrambe)
-              </button>
-            </div>
+            <p style={{fontSize:12,color:C.muted,marginBottom:16,lineHeight:1.5}}>
+              Vuoi salvare comunque o annullare?
+            </p>
+            <button className="btn-primary" style={{...s.btn(),marginBottom:8,
+              background:C.danger,boxShadow:`0 4px 14px rgba(185,28,28,.25)`}}
+              onClick={duplicateWarning.onConfirm}>
+              Salva comunque
+            </button>
+            <button className="btn-ghost" style={s.btn("ghost")} onClick={duplicateWarning.onCancel}>
+              Annulla — rivedi la spesa
+            </button>
           </div>
         </div>
       )}
@@ -1106,15 +1019,10 @@ function App(){
             <div>
               <h1 style={{fontFamily:"'Cormorant Garamond',serif",fontWeight:600,fontSize:20,
                 color:C.text,letterSpacing:"-0.02em",lineHeight:1}}>SpeseFiscali</h1>
-              <div style={{display:"flex",alignItems:"center",gap:6,marginTop:2}}>
-                <span style={{fontSize:10,color:C.muted,fontFamily:"'DM Mono',monospace"}}>Dichiarazione redditi · build 14/03_Ver 1</span>
-                <span style={{width:4,height:4,borderRadius:"50%",
-                  background:cfSyncing?C.gold:cfConfigured?C.success:C.border,
-                  display:"inline-block",animation:cfSyncing?"pulse 1s infinite":undefined}}/>
+              <div style={{fontSize:10,color:C.muted,fontFamily:"'DM Mono',monospace",marginTop:3,lineHeight:1.6}}>
+                per dichiarazione redditi<br/>
+                build 14/03_Ver 2
               </div>
-              {lastSaved&&<div style={{fontSize:9,color:C.mutedLight,fontFamily:"'DM Mono',monospace",marginTop:2}}>
-                aggiornato {lastSaved.toLocaleDateString("it-IT",{day:"2-digit",month:"2-digit",year:"2-digit"})} {lastSaved.toLocaleTimeString("it-IT",{hour:"2-digit",minute:"2-digit"})}
-              </div>}
             </div>
           </div>
           <button onClick={()=>{setPage("impostazioni");setDetail(null);}}
@@ -1213,9 +1121,8 @@ function App(){
           {step==="review"&&<ReviewForm form={form} setForm={setForm} fileData={fileData}
             payers={payers} onSave={editingExpense?saveEditedExpense:saveExpense} err={err}
             isEditing={!!editingExpense}
-            onSaveAll={!editingExpense&&batchTotal>1?saveAll:null}
             batchIndex={batchIndex} batchTotal={batchTotal}
-            onSkip={batchTotal>1&&batchIndex<batchTotal-1?batchNext:null}
+            onSkip={batchTotal>1?batchNext:null}
             onBack={batchTotal>1&&batchIndex>0?batchBack:null}
             onCancel={()=>{
               if(batchTotal>1){isSavingRef.current=false;setBatchState([],0,0);}
@@ -1462,7 +1369,7 @@ function DetailView({expense,onBack,onDelete,onEdit}){
 }
 
 /* ── REVIEW FORM ── */
-function ReviewForm({form,setForm,fileData,payers,onSave,onSaveAll,onCancel,onSkip,onBack,err,batchIndex,batchTotal,isEditing}){
+function ReviewForm({form,setForm,fileData,payers,onSave,onCancel,onSkip,onBack,err,batchIndex,batchTotal,isEditing}){
   const upd=(k,v)=>setForm(f=>({...f,[k]:v}));
   const updCat=(catId)=>setForm(f=>({...f,categoria:catId,sottocategoria:null}));
   const valid=form.beneficiario&&form.importo&&Number(form.importo)>0;
@@ -1647,11 +1554,6 @@ function ReviewForm({form,setForm,fileData,payers,onSave,onSaveAll,onCancel,onSk
         onClick={valid?onSave:undefined} disabled={!valid}>
         {isEditing?"✅  Salva modifiche":isBatch?"✅ Salva e continua →":"✅  Salva spesa"}
       </button>
-      {isBatch&&onSaveAll&&<button className="btn-ghost" style={{...s.btn("secondary"),marginTop:8,
-        opacity:valid?1:.4}}
-        onClick={valid?onSaveAll:undefined} disabled={!valid}>
-        ⚡ Salva tutti ({batchTotal - batchIndex} rimanenti)
-      </button>}
       <button className="btn-ghost" style={{...s.btn("ghost"),marginTop:8}} onClick={onCancel}>
         {isBatch?"✕ Annulla tutto il batch":"Annulla"}
       </button>
