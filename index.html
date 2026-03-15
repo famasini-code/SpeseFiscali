@@ -6,7 +6,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes"/>
 <meta name="apple-mobile-web-app-status-bar-style" content="default"/>
 <meta name="theme-color" content="#F5F1EA"/>
-<title>SpeseFiscali — build 14/03_Ver 9</title>
+<title>SpeseFiscali — build 14/03_Ver 11</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;1,400&family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet"/>
@@ -165,6 +165,23 @@ const resizeImage=(dataUrl,maxPx=1500,quality=0.78)=>new Promise(res=>{
     const out=c.toDataURL("image/jpeg",quality);
     res({dataUrl:out,base64:out.split(",")[1]});
   };
+  img.src=dataUrl;
+});
+
+// Compressione aggressiva per localStorage: max 700px, qualità 0.45 → ~40-70KB
+const compressForStorage=(dataUrl)=>new Promise(res=>{
+  if(!dataUrl){res(null);return;}
+  const img=new Image();
+  img.onload=()=>{
+    const scale=Math.min(1,700/Math.max(img.width,img.height));
+    const w=Math.round(img.width*scale);
+    const h=Math.round(img.height*scale);
+    const c=document.createElement("canvas");
+    c.width=w;c.height=h;
+    c.getContext("2d").drawImage(img,0,0,w,h);
+    res(c.toDataURL("image/jpeg",0.45));
+  };
+  img.onerror=()=>res(null);
   img.src=dataUrl;
 });
 
@@ -601,6 +618,16 @@ function App(){
     }
   },[step]);
 
+  // Svuota le immagini dal localStorage dopo sync cloud riuscita
+  // Le spese (testo) rimangono come fallback offline
+  const clearImgCache=()=>{
+    const imgKeys=Object.keys(localStorage).filter(k=>
+      k.startsWith("sf:img:")
+    );
+    imgKeys.forEach(k=>localStorage.removeItem(k));
+    if(imgKeys.length>0)showToast(`Cache locale liberata (${imgKeys.length} immagini)`,"info");
+  };
+
   const syncFromCF=async()=>{
     if(!cfService.configured)return;
     setCfSyncing(true);
@@ -613,10 +640,13 @@ function App(){
 
   const persistExpenses=async(list)=>{
     LS.set(KEY_LS,JSON.stringify(list));
-    // Cloudflare (priorità — condiviso tra dispositivi)
     if(cfService.configured){
       setCfSyncing(true);
-      try{await cfService.saveExpenses(list);}
+      try{
+        await cfService.saveExpenses(list);
+        // Sync riuscita → svuota cache immagini locale
+        clearImgCache();
+      }
       catch(e){showToast("Cloud sync fallita: "+e.message,"err");}
       finally{setCfSyncing(false);}
     }
@@ -843,18 +873,40 @@ function App(){
     const groupId=fd?.sharedDocGroupId||null;
     const newExp={...form,id,docType:fd?.mediaType||null,hasDoc:!!fd,
       sharedDocId:groupId||null};
-    // Salva immagine in localStorage — solo dataUrl (base64 è ricavabile da essa)
-    if(fd){
-      const imgData=JSON.stringify({dataUrl:fd.dataUrl,mediaType:fd.mediaType,isPdf:fd.isPdf});
-      if(groupId){
-        const gKey=sharedImgKey(groupId);
-        if(!LS.get(gKey)){
-          try{LS.set(gKey,imgData);}
-          catch{showToast("⚠️ Spazio esaurito — documento non salvato","err");}
+    // Salva immagine in localStorage con compressione aggressiva (~40-70KB)
+    if(fd&&fd.dataUrl){
+      const compressed=await compressForStorage(fd.dataUrl);
+      if(compressed){
+        const imgData=JSON.stringify({dataUrl:compressed,mediaType:fd.mediaType||"image/jpeg",isPdf:false});
+        const saveImg=(key)=>{
+          try{LS.set(key,imgData);return true;}
+          catch{
+            // Spazio esaurito: elimina le immagini più vecchie e riprova
+            const imgKeys=Object.keys(localStorage)
+              .filter(k=>(k.startsWith("sf:img:")))
+              .sort((a,b)=>(localStorage.getItem(a)||"").length-(localStorage.getItem(b)||"").length);
+            for(const k of imgKeys){
+              localStorage.removeItem(k);
+              try{LS.set(key,imgData);return true;}catch{}
+            }
+            showToast("⚠️ Spazio esaurito — documento non salvato","err");
+            return false;
+          }
+        };
+        if(groupId){
+          const gKey=sharedImgKey(groupId);
+          if(!LS.get(gKey))saveImg(gKey);
+        }else{
+          saveImg(imgKey(id));
         }
-      }else{
-        try{LS.set(imgKey(id),imgData);}
-        catch{showToast("⚠️ Spazio esaurito — documento non salvato","err");}
+      }
+    }else if(fd&&fd.isPdf){
+      // PDF: salva base64 direttamente (non comprimibile)
+      const imgData=JSON.stringify({dataUrl:null,base64:fd.base64,mediaType:"application/pdf",isPdf:true});
+      const key=groupId?sharedImgKey(groupId):imgKey(id);
+      if(!groupId||!LS.get(key)){
+        try{LS.set(key,imgData);}
+        catch{showToast("⚠️ Spazio esaurito — PDF non salvato","err");}
       }
     }
     const isBatch=batchQueueRef.current.length>1;
@@ -1090,7 +1142,7 @@ function App(){
                 color:C.text,letterSpacing:"-0.02em",lineHeight:1}}>SpeseFiscali</h1>
               <div style={{fontSize:10,color:C.muted,fontFamily:"'DM Mono',monospace",marginTop:3,lineHeight:1.6}}>
                 per dichiarazione redditi<br/>
-                build 14/03_Ver 9
+                build 14/03_Ver 11
               </div>
             </div>
           </div>
@@ -1303,6 +1355,7 @@ function App(){
           <ImpostazioniPage
             apiKey={apiKey} cfConfigured={cfConfigured} cfSyncing={cfSyncing}
             onSyncCF={syncFromCF}
+            onClearImgCache={clearImgCache}
             onSaveCF={(secret)=>{
               cfService.configure(CF_WORKER_URL,secret);
               setCfConfigured(!!secret);
@@ -1828,7 +1881,7 @@ function ExportPage({expenses,cfConfigured,cfSyncing}){
 }
 
 function ImpostazioniPage({apiKey,cfConfigured,cfSyncing,
-  onSyncCF,onSaveCF,onDisconnectCF,onResetApiKey,expenseCount}){
+  onSyncCF,onSaveCF,onDisconnectCF,onResetApiKey,onClearImgCache,expenseCount}){
   const isServed=window.location.protocol!=="file:";
   const[cfSecret,setCfSecret]=useState(()=>LS.get(KEY_CF_SECRET)?.value||"");
   const[cfShowSecret,setCfShowSecret]=useState(false);
@@ -1908,6 +1961,29 @@ function ImpostazioniPage({apiKey,cfConfigured,cfSyncing,
             Disconnetti
           </button>
         </>}
+      </div>
+
+      {/* ── STORAGE ── */}
+      <div style={{...s.card,marginBottom:14}}>
+        <p style={{...s.label,marginBottom:8}}>Spazio locale</p>
+        {(()=>{
+          const tot=Object.keys(localStorage).reduce((s,k)=>s+(localStorage.getItem(k)||"").length,0);
+          const imgs=Object.keys(localStorage).filter(k=>k.startsWith("sf:img:")).reduce((s,k)=>s+(localStorage.getItem(k)||"").length,0);
+          const pct=Math.round(tot/5242880*100);
+          return<>
+            <div style={{background:C.border,borderRadius:6,height:6,marginBottom:8,overflow:"hidden"}}>
+              <div style={{height:"100%",borderRadius:6,
+                background:pct>80?C.danger:pct>50?C.gold:C.success,
+                width:`${Math.min(100,pct)}%`,transition:"width .3s"}}/>
+            </div>
+            <p style={{fontSize:11,color:C.muted,marginBottom:12,fontFamily:"'DM Mono',monospace"}}>
+              {(tot/1024).toFixed(0)}KB usati su ~5MB · immagini: {(imgs/1024).toFixed(0)}KB
+            </p>
+          </>;
+        })()}
+        <button className="btn-ghost" style={s.btn("ghost")} onClick={onClearImgCache}>
+          🗑 Libera cache immagini locale
+        </button>
       </div>
 
       {/* ── API KEY ── */}
