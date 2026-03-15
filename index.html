@@ -6,7 +6,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes"/>
 <meta name="apple-mobile-web-app-status-bar-style" content="default"/>
 <meta name="theme-color" content="#F5F1EA"/>
-<title>SpeseFiscali — build 15/03_Ver 1</title>
+<title>SpeseFiscali — build 15/03_Ver 2</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;1,400&family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet"/>
@@ -811,6 +811,19 @@ function App(){
         // Più scontrini in una sola immagine → inseriscili nel carosello
         const forms=await Promise.all(results.map(r=>buildFormFromRaw(r)));
         const groupId=Date.now(); // ID condiviso per l'immagine comune
+        // Salva l'immagine subito una volta sola — non aspettare i salvataggi singoli
+        if(currentFileData?.dataUrl){
+          const compressed=await compressForStorage(currentFileData.dataUrl);
+          if(compressed){
+            const imgData=JSON.stringify({dataUrl:compressed,mediaType:mt||"image/jpeg",isPdf:false});
+            try{LS.set(sharedImgKey(groupId),imgData);}
+            catch{
+              const imgKeys=Object.keys(localStorage).filter(k=>k.startsWith("sf:img:"));
+              imgKeys.forEach(k=>localStorage.removeItem(k));
+              try{LS.set(sharedImgKey(groupId),imgData);}catch{}
+            }
+          }
+        }
         const syntheticItems=forms.map(f=>({
           base64:b64,mediaType:mt,
           dataUrl:currentFileData?.dataUrl||null,
@@ -820,6 +833,7 @@ function App(){
         }));
         setBatchState(syntheticItems, 0, syntheticItems.length);
         isSavingRef.current=true;
+        batchAccumulator.current=[];
         setFileDataSync(syntheticItems[0]);
         const firstForm=forms[0];
         const warn=(!firstForm.beneficiario&&!firstForm.importo)?"⚠️ Estrazione parziale — verifica i campi":null;
@@ -1052,7 +1066,7 @@ function App(){
                 color:C.text,letterSpacing:"-0.02em",lineHeight:1}}>SpeseFiscali</h1>
               <div style={{fontSize:10,color:C.muted,fontFamily:"'DM Mono',monospace",marginTop:3,lineHeight:1.6}}>
                 per dichiarazione redditi<br/>
-                build 15/03_Ver 1
+                build 15/03_Ver 2
               </div>
             </div>
           </div>
