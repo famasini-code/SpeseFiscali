@@ -6,7 +6,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes"/>
 <meta name="apple-mobile-web-app-status-bar-style" content="default"/>
 <meta name="theme-color" content="#F5F1EA"/>
-<title>SpeseFiscali — build 14/03_Ver 14</title>
+<title>SpeseFiscali — build 14/03_Ver 15</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;1,400&family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet"/>
@@ -1160,7 +1160,7 @@ function App(){
                 color:C.text,letterSpacing:"-0.02em",lineHeight:1}}>SpeseFiscali</h1>
               <div style={{fontSize:10,color:C.muted,fontFamily:"'DM Mono',monospace",marginTop:3,lineHeight:1.6}}>
                 per dichiarazione redditi<br/>
-                build 14/03_Ver 14
+                build 14/03_Ver 15
               </div>
             </div>
           </div>
@@ -1900,6 +1900,29 @@ function ExportPage({expenses,cfConfigured,cfSyncing}){
   );
 }
 
+/* ── STORAGE BAR ── */
+function StorageBar({onClearImgCache}){
+  const tot=Object.keys(localStorage).reduce((s,k)=>s+(localStorage.getItem(k)||"").length,0);
+  const imgs=Object.keys(localStorage).filter(k=>k.startsWith("sf:img:")).reduce((s,k)=>s+(localStorage.getItem(k)||"").length,0);
+  const pct=Math.min(100,Math.round(tot/5242880*100));
+  const barColor=pct>80?C.danger:pct>50?C.gold:C.success;
+  return(
+    <div style={{...s.card,marginBottom:14}}>
+      <p style={{...s.label,marginBottom:8}}>Spazio locale</p>
+      <div style={{background:C.border,borderRadius:6,height:6,marginBottom:8,overflow:"hidden"}}>
+        <div style={{height:"100%",borderRadius:6,background:barColor,
+          width:pct+"%",transition:"width .3s"}}/>
+      </div>
+      <p style={{fontSize:11,color:C.muted,marginBottom:12,fontFamily:"'DM Mono',monospace"}}>
+        {Math.round(tot/1024)}KB usati su ~5MB &middot; immagini: {Math.round(imgs/1024)}KB
+      </p>
+      <button className="btn-ghost" style={s.btn("ghost")} onClick={onClearImgCache}>
+        🗑 Libera cache immagini locale
+      </button>
+    </div>
+  );
+}
+
 function ImpostazioniPage({apiKey,cfConfigured,cfSyncing,
   onSyncCF,onSaveCF,onDisconnectCF,onResetApiKey,onClearImgCache,expenseCount}){
   const isServed=window.location.protocol!=="file:";
@@ -1984,27 +2007,7 @@ function ImpostazioniPage({apiKey,cfConfigured,cfSyncing,
       </div>
 
       {/* ── STORAGE ── */}
-      <div style={{...s.card,marginBottom:14}}>
-        <p style={{...s.label,marginBottom:8}}>Spazio locale</p>
-        {(()=>{
-          const tot=Object.keys(localStorage).reduce((s,k)=>s+(localStorage.getItem(k)||"").length,0);
-          const imgs=Object.keys(localStorage).filter(k=>k.startsWith("sf:img:")).reduce((s,k)=>s+(localStorage.getItem(k)||"").length,0);
-          const pct=Math.round(tot/5242880*100);
-          return<>
-            <div style={{background:C.border,borderRadius:6,height:6,marginBottom:8,overflow:"hidden"}}>
-              <div style={{height:"100%",borderRadius:6,
-                background:pct>80?C.danger:pct>50?C.gold:C.success,
-                width:`${Math.min(100,pct)}%`,transition:"width .3s"}}/>
-            </div>
-            <p style={{fontSize:11,color:C.muted,marginBottom:12,fontFamily:"'DM Mono',monospace"}}>
-              {(tot/1024).toFixed(0)}KB usati su ~5MB · immagini: {(imgs/1024).toFixed(0)}KB
-            </p>
-          </>;
-        })()}
-        <button className="btn-ghost" style={s.btn("ghost")} onClick={onClearImgCache}>
-          🗑 Libera cache immagini locale
-        </button>
-      </div>
+      <StorageBar onClearImgCache={onClearImgCache}/>
 
       {/* ── API KEY ── */}
       <div style={{...s.card,marginBottom:14}}>
