@@ -6,7 +6,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes"/>
 <meta name="apple-mobile-web-app-status-bar-style" content="default"/>
 <meta name="theme-color" content="#F5F1EA"/>
-<title>SpeseFiscali — build 14/03_Ver 8</title>
+<title>SpeseFiscali — build 14/03_Ver 9</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;1,400&family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet"/>
@@ -1090,7 +1090,7 @@ function App(){
                 color:C.text,letterSpacing:"-0.02em",lineHeight:1}}>SpeseFiscali</h1>
               <div style={{fontSize:10,color:C.muted,fontFamily:"'DM Mono',monospace",marginTop:3,lineHeight:1.6}}>
                 per dichiarazione redditi<br/>
-                build 14/03_Ver 8
+                build 14/03_Ver 9
               </div>
             </div>
           </div>
@@ -1388,6 +1388,16 @@ function DetailView({expense,onBack,onDelete,onEdit}){
       </div>}
       {expense.hasDoc&&!doc&&!loadingDoc&&<div style={{...s.card,textAlign:"center",padding:"16px",marginBottom:12}}>
         <p style={{color:C.muted,fontSize:11}}>Documento non disponibile</p>
+        {/* DEBUG — rimuovere dopo il test */}
+        <div style={{marginTop:8,fontSize:9,color:C.muted,fontFamily:"'DM Mono',monospace",textAlign:"left",lineHeight:1.8}}>
+          <div>hasDoc: {String(expense.hasDoc)}</div>
+          <div>sharedDocId: {String(expense.sharedDocId||"—")}</div>
+          <div>imgKey esiste: {String(!!LS.get(imgKey(expense.id))?.value)}</div>
+          <div>groupKey esiste: {expense.sharedDocId?String(!!LS.get(sharedImgKey(expense.sharedDocId))?.value):"—"}</div>
+          <div>groupKey size: {expense.sharedDocId?(LS.get(sharedImgKey(expense.sharedDocId))?.value?.length||0)+"B":"—"}</div>
+          <div>LS tot. keys: {Object.keys(localStorage).filter(k=>k.startsWith("sf:")).length}</div>
+          <div>LS tot. size: {Object.keys(localStorage).reduce((s,k)=>s+(localStorage.getItem(k)||"").length,0)}B</div>
+        </div>
       </div>}
 
       {/* Main card */}
