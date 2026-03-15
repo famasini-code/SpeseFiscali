@@ -6,7 +6,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes"/>
 <meta name="apple-mobile-web-app-status-bar-style" content="default"/>
 <meta name="theme-color" content="#F5F1EA"/>
-<title>SpeseFiscali — build 14/03_Ver 11</title>
+<title>SpeseFiscali — build 14/03_Ver 12</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;1,400&family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet"/>
@@ -875,19 +875,22 @@ function App(){
       sharedDocId:groupId||null};
     // Salva immagine in localStorage con compressione aggressiva (~40-70KB)
     if(fd&&fd.dataUrl){
+      console.log("[doSave] fd.dataUrl length:",fd.dataUrl.length,"groupId:",groupId);
       const compressed=await compressForStorage(fd.dataUrl);
+      console.log("[doSave] compressed length:",compressed?.length||"null");
       if(compressed){
         const imgData=JSON.stringify({dataUrl:compressed,mediaType:fd.mediaType||"image/jpeg",isPdf:false});
+        console.log("[doSave] imgData length:",imgData.length);
         const saveImg=(key)=>{
-          try{LS.set(key,imgData);return true;}
-          catch{
-            // Spazio esaurito: elimina le immagini più vecchie e riprova
+          try{LS.set(key,imgData);console.log("[doSave] saved to key:",key);return true;}
+          catch(err){
+            console.error("[doSave] LS.set failed:",err);
             const imgKeys=Object.keys(localStorage)
               .filter(k=>(k.startsWith("sf:img:")))
               .sort((a,b)=>(localStorage.getItem(a)||"").length-(localStorage.getItem(b)||"").length);
             for(const k of imgKeys){
               localStorage.removeItem(k);
-              try{LS.set(key,imgData);return true;}catch{}
+              try{LS.set(key,imgData);console.log("[doSave] saved after cleanup to:",key);return true;}catch{}
             }
             showToast("⚠️ Spazio esaurito — documento non salvato","err");
             return false;
@@ -896,9 +899,12 @@ function App(){
         if(groupId){
           const gKey=sharedImgKey(groupId);
           if(!LS.get(gKey))saveImg(gKey);
+          else console.log("[doSave] groupKey already exists, skip");
         }else{
           saveImg(imgKey(id));
         }
+      }else{
+        console.warn("[doSave] compressForStorage returned null");
       }
     }else if(fd&&fd.isPdf){
       // PDF: salva base64 direttamente (non comprimibile)
@@ -1142,7 +1148,7 @@ function App(){
                 color:C.text,letterSpacing:"-0.02em",lineHeight:1}}>SpeseFiscali</h1>
               <div style={{fontSize:10,color:C.muted,fontFamily:"'DM Mono',monospace",marginTop:3,lineHeight:1.6}}>
                 per dichiarazione redditi<br/>
-                build 14/03_Ver 11
+                build 14/03_Ver 12
               </div>
             </div>
           </div>
@@ -1445,9 +1451,11 @@ function DetailView({expense,onBack,onDelete,onEdit}){
         <div style={{marginTop:8,fontSize:9,color:C.muted,fontFamily:"'DM Mono',monospace",textAlign:"left",lineHeight:1.8}}>
           <div>hasDoc: {String(expense.hasDoc)}</div>
           <div>sharedDocId: {String(expense.sharedDocId||"—")}</div>
+          <div>docType: {String(expense.docType||"—")}</div>
           <div>imgKey esiste: {String(!!LS.get(imgKey(expense.id))?.value)}</div>
           <div>groupKey esiste: {expense.sharedDocId?String(!!LS.get(sharedImgKey(expense.sharedDocId))?.value):"—"}</div>
           <div>groupKey size: {expense.sharedDocId?(LS.get(sharedImgKey(expense.sharedDocId))?.value?.length||0)+"B":"—"}</div>
+          <div>ALL sf:img keys: {Object.keys(localStorage).filter(k=>k.startsWith("sf:img:")).join(", ")||"nessuna"}</div>
           <div>LS tot. keys: {Object.keys(localStorage).filter(k=>k.startsWith("sf:")).length}</div>
           <div>LS tot. size: {Object.keys(localStorage).reduce((s,k)=>s+(localStorage.getItem(k)||"").length,0)}B</div>
         </div>
