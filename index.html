@@ -6,7 +6,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes"/>
 <meta name="apple-mobile-web-app-status-bar-style" content="default"/>
 <meta name="theme-color" content="#F5F1EA"/>
-<title>SpeseFiscali — build 14/03_Ver 15</title>
+<title>SpeseFiscali — build 15/03_Ver 1</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;1,400&family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet"/>
@@ -168,7 +168,8 @@ const resizeImage=(dataUrl,maxPx=1500,quality=0.78)=>new Promise(res=>{
   img.src=dataUrl;
 });
 
-// Compressione aggressiva per localStorage: max 700px, qualità 0.45 → ~40-70KB
+
+// Compressione aggressiva per localStorage: max 700px, qualita 0.45
 const compressForStorage=(dataUrl)=>new Promise(res=>{
   if(!dataUrl){res(null);return;}
   const img=new Image();
@@ -449,20 +450,18 @@ function exportExcel(expenses,year){
     "Pagamento":e.metodo_pagamento?pmLabel(e.metodo_pagamento):"—",
     "Tracciabile":e.metodo_pagamento?(pmTracciabile(e.metodo_pagamento)?"Sì":"No"):"—",
     "Tipo doc.":e.docType==="application/pdf"?"PDF":e.hasDoc?"Immagine":"—",
-    "Importo €":Number(e.importo),
-    "Quota detraibile €":e.importo_detraibile&&Number(e.importo_detraibile)>0?Number(e.importo_detraibile):"—"
+    "Importo €":Number(e.importo)
   }));
   const summary=CATS.map(c=>({
     "Categoria":catLabel(c.id),
     "N.":expenses.filter(e=>e.categoria===c.id).length,
-    "Totale €":expenses.filter(e=>e.categoria===c.id).reduce((s,e)=>s+Number(e.importo),0),
-    "Totale detraibile €":expenses.filter(e=>e.categoria===c.id).reduce((s,e)=>s+Number(e.importo_detraibile||0),0)||"—"
+    "Totale €":expenses.filter(e=>e.categoria===c.id).reduce((s,e)=>s+Number(e.importo),0)
   }));
   const wb=XLSX.utils.book_new();
   const ws1=XLSX.utils.json_to_sheet(rows);
   const ws2=XLSX.utils.json_to_sheet(summary);
-  ws1["!cols"]=[12,28,35,18,18,10,12,12,10,10,12,14].map(w=>({wch:w}));
-  ws2["!cols"]=[28,6,12,16].map(w=>({wch:w}));
+  ws1["!cols"]=[12,28,35,18,18,10,12,12,10,10,12].map(w=>({wch:w}));
+  ws2["!cols"]=[28,6,12].map(w=>({wch:w}));
   XLSX.utils.book_append_sheet(wb,ws1,`Spese ${year}`);
   XLSX.utils.book_append_sheet(wb,ws2,"Riepilogo");
   XLSX.writeFile(wb,`SpeseFiscali_${year}.xlsx`);
@@ -556,8 +555,7 @@ function App(){
   const[detail,setDetail]=useState(null);
   const[cfConfigured,setCfConfigured]=useState(()=>!!LS.get(KEY_CF_SECRET)?.value);
   const[cfSyncing,setCfSyncing]=useState(false);
-  const[debugLog,setDebugLog]=useState([]);
-  const dbg=(msg)=>setDebugLog(p=>[...p.slice(-8),msg]);
+  const[duplicateWarning,setDuplicateWarning]=useState(null);
   const[batchQueue,setBatchQueue]=useState([]);
   const batchQueueRef=useRef([]);
   const[batchIndex,setBatchIndex]=useState(0);
@@ -619,16 +617,6 @@ function App(){
     }
   },[step]);
 
-  // Svuota le immagini dal localStorage dopo sync cloud riuscita
-  // Le spese (testo) rimangono come fallback offline
-  const clearImgCache=()=>{
-    const imgKeys=Object.keys(localStorage).filter(k=>
-      k.startsWith("sf:img:")
-    );
-    imgKeys.forEach(k=>localStorage.removeItem(k));
-    if(imgKeys.length>0)showToast(`Cache locale liberata (${imgKeys.length} immagini)`,"info");
-  };
-
   const syncFromCF=async()=>{
     if(!cfService.configured)return;
     setCfSyncing(true);
@@ -639,15 +627,17 @@ function App(){
     finally{setCfSyncing(false);}
   };
 
+  const clearImgCache=()=>{
+    const imgKeys=Object.keys(localStorage).filter(k=>k.startsWith("sf:img:"));
+    imgKeys.forEach(k=>localStorage.removeItem(k));
+    if(imgKeys.length>0)showToast("Cache locale liberata","info");
+  };
+
   const persistExpenses=async(list)=>{
     LS.set(KEY_LS,JSON.stringify(list));
     if(cfService.configured){
       setCfSyncing(true);
-      try{
-        await cfService.saveExpenses(list);
-        // Sync riuscita → svuota cache immagini locale
-        clearImgCache();
-      }
+      try{await cfService.saveExpenses(list);clearImgCache();}
       catch(e){showToast("Cloud sync fallita: "+e.message,"err");}
       finally{setCfSyncing(false);}
     }
@@ -686,7 +676,6 @@ function App(){
       }));
       setBatchState(items, 0, items.length);
       isSavingRef.current=true;
-      batchAccumulator.current=[];
       setFileDataSync(items[0]);
       analyzeBatchItem(items[0],0,items);
     }
@@ -704,11 +693,14 @@ function App(){
     }
     const cfUpper=(r.cf_trovato||"").toUpperCase().trim();
     const cfMatch=CF_MAP[cfUpper]||null;
-    const hasDetraibile=r.importo_detraibile&&Number(r.importo_detraibile)>0;
+    // Usa importo_detraibile se esplicitamente indicato nel documento, altrimenti importo totale
+    const importoFinale=(r.importo_detraibile&&Number(r.importo_detraibile)>0)
+      ?r.importo_detraibile
+      :r.importo;
     return{
       beneficiario:r.beneficiario||"",
-      importo:r.importo??"",
-      importo_detraibile:hasDetraibile?r.importo_detraibile:"",
+      importo:importoFinale??"",
+      importo_totale:(r.importo_detraibile&&Number(r.importo_detraibile)>0)?r.importo:null,
       data:r.data||new Date().toISOString().slice(0,10),
       descrizione:r.descrizione||"",categoria,sottocategoria,
       metodo_pagamento:r.metodo_pagamento||null,
@@ -736,7 +728,6 @@ function App(){
         ];
         setBatchState(newQueue, idx, newQueue.length);
         isSavingRef.current=true;
-      batchAccumulator.current=[];
         const firstForm=forms[0];
         setFileDataSync({...item,_prebuiltForm:firstForm});
         const warn=(!firstForm.beneficiario&&!firstForm.importo)?"⚠️ Estrazione parziale — verifica i campi":null;
@@ -793,7 +784,6 @@ function App(){
         analyzeBatchItem(item,next,queue);
       }
     }else{
-      // Fine batch — commit atomico di tutto l'accumulato
       const accumulated=batchAccumulator.current;
       batchAccumulator.current=[];
       isSavingRef.current=false;
@@ -804,7 +794,7 @@ function App(){
         setExpensesSync(final);
         LS.set(KEY_LS,JSON.stringify(final));
         if(cfService.configured)persistExpenses(final).catch(()=>{});
-        showToast(`${accumulated.length} spese salvate ✓`);
+        showToast(accumulated.length+" spese salvate");
       }
       setPage("archivio");
     }
@@ -814,7 +804,7 @@ function App(){
     setStep("loading");setErr(null);
     const b64=b64Override??fileDataRef.current?.base64;
     const mt=mtOverride??fileDataRef.current?.mediaType;
-    const currentFileData=fileDataRef.current;  // ref — sempre aggiornato
+    const currentFileData=fileDataRef.current;
     try{
       const results=await analyzeFile(b64,mt,apiKey);
       if(results.length>1){
@@ -830,7 +820,6 @@ function App(){
         }));
         setBatchState(syntheticItems, 0, syntheticItems.length);
         isSavingRef.current=true;
-      batchAccumulator.current=[];
         setFileDataSync(syntheticItems[0]);
         const firstForm=forms[0];
         const warn=(!firstForm.beneficiario&&!firstForm.importo)?"⚠️ Estrazione parziale — verifica i campi":null;
@@ -870,123 +859,62 @@ function App(){
   const doSave=async()=>{
     if(!form.beneficiario||!form.importo)return;
     const id=Date.now();
-    const fd=fileDataRef.current;  // usa ref — non closure stale
+    const fd=fileDataRef.current;
     const groupId=fd?.sharedDocGroupId||null;
     const newExp={...form,id,docType:fd?.mediaType||null,hasDoc:!!fd,
       sharedDocId:groupId||null};
-    // Salva immagine in localStorage con compressione aggressiva (~40-70KB)
-    dbg('doSave fd:'+(fd?'ok':'NULL')+' dataUrl:'+(fd?.dataUrl?'yes':'NO')+' isPdf:'+(fd?.isPdf||false));
+    // Salva immagine compressa in localStorage
     if(fd&&fd.dataUrl){
-      dbg('dataUrl:'+fd.dataUrl.length+'B gid:'+(groupId||'no'));
       const compressed=await compressForStorage(fd.dataUrl);
-      dbg('compressed:'+(compressed?compressed.length:'null')+'B');
       if(compressed){
         const imgData=JSON.stringify({dataUrl:compressed,mediaType:fd.mediaType||"image/jpeg",isPdf:false});
-        dbg('imgData:'+imgData.length+'B');
         const saveImg=(key)=>{
-          try{LS.set(key,imgData);dbg('saved:'+key);return true;}
-          catch(err){
-            dbg('ERR:'+(err.message||String(err)));
-            const imgKeys=Object.keys(localStorage)
-              .filter(k=>(k.startsWith("sf:img:")))
-              .sort((a,b)=>(localStorage.getItem(a)||"").length-(localStorage.getItem(b)||"").length);
-            for(const k of imgKeys){
-              localStorage.removeItem(k);
-              try{LS.set(key,imgData);dbg('saved-cleanup:'+key);return true;}catch{}
-            }
-            showToast("⚠️ Spazio esaurito — documento non salvato","err");
+          try{LS.set(key,imgData);return true;}
+          catch{
+            const imgKeys=Object.keys(localStorage).filter(k=>k.startsWith("sf:img:"));
+            imgKeys.forEach(k=>localStorage.removeItem(k));
+            try{LS.set(key,imgData);return true;}catch{}
+            showToast("Spazio esaurito: doc non salvato","err");
             return false;
           }
         };
-        if(groupId){
-          const gKey=sharedImgKey(groupId);
-          if(!LS.get(gKey))saveImg(gKey);
-          else dbg('gKey exists');
-        }else{
-          saveImg(imgKey(id));
-        }
-      }else{
-        dbg('WARN:compress null');
+        if(groupId){const gKey=sharedImgKey(groupId);if(!LS.get(gKey))saveImg(gKey);}
+        else{saveImg(imgKey(id));}
       }
-    }else if(fd&&fd.isPdf){
-      // PDF: salva base64 direttamente (non comprimibile)
+    }else if(fd&&fd.isPdf&&fd.base64){
       const imgData=JSON.stringify({dataUrl:null,base64:fd.base64,mediaType:"application/pdf",isPdf:true});
       const key=groupId?sharedImgKey(groupId):imgKey(id);
-      if(!groupId||!LS.get(key)){
-        try{LS.set(key,imgData);}
-        catch{showToast("⚠️ Spazio esaurito — PDF non salvato","err");}
-      }
+      if(!groupId||!LS.get(key)){try{LS.set(key,imgData);}catch{}}
     }
     const isBatch=batchQueueRef.current.length>1;
     if(isBatch){
-      // Accumula senza toccare expensesRef — commit atomico in batchNext alla fine
       batchAccumulator.current.push(newExp);
       const savedN=batchIndexRef.current+1;
       const total=batchQueueRef.current.length;
-      showToast(`Spesa ${savedN}/${total} salvata ✓`);
+      showToast("Spesa "+savedN+"/"+total+" salvata");
       batchNext();
     }else{
-      // Singolo: scrittura normale
       const updated=[newExp,...expensesRef.current];
       setExpensesSync(updated);
       await persistExpenses(updated);
       if(fd&&cfService.configured){
         if(groupId){
           const isFirst=!expensesRef.current.slice(1).some(e=>e.sharedDocId===groupId);
-          if(isFirst)cfService.saveDocument(`group_${groupId}`,fd).catch(()=>{});
+          if(isFirst)cfService.saveDocument("group_"+groupId,fd).catch(()=>{});
         }else{
           cfService.saveDocument(id,fd).catch(()=>{});
         }
       }
-      showToast(fd?"Spesa e allegato salvati ✓":"Spesa salvata ✓");
+      showToast(fd?"Spesa e allegato salvati":"Spesa salvata");
       setStep("idle");setFileDataSync(null);setForm({});setPage("archivio");
     }
   };
 
   const saveExpense=async()=>{
     if(!form.beneficiario||!form.importo)return;
-    // Controlla duplicati sia nell'accumulatore batch che nelle spese esistenti
-    const isBatch=batchQueueRef.current.length>1;
-    const searchIn=isBatch
-      ?[...batchAccumulator.current,...expensesRef.current]
-      :expensesRef.current;
-    const suspects=findDuplicates(form,searchIn);
+    const suspects=findDuplicates(form,expensesRef.current);
     if(suspects.length>0){
-      setDuplicateWarning({
-        suspects,
-        // Rivedi: chiude il modale, rimani nel form
-        onCancel:()=>setDuplicateWarning(null),
-        // Salva comunque: aggiunge senza toccare i vecchi
-        onConfirm:()=>{setDuplicateWarning(null);doSave();},
-        // Scarta: salta questa spesa e avanza (non perde il batch)
-        onDiscard:()=>{
-          setDuplicateWarning(null);
-          if(isBatch){
-            showToast("Spesa scartata — duplicato ignorato");
-            batchNext();
-          }else{
-            setStep("idle");setFileDataSync(null);setForm({});
-          }
-        },
-        // Sovrascrivi: rimuove il vecchio duplicato dall'accumulatore o da expensesRef, poi salva
-        onOverwrite:()=>{
-          setDuplicateWarning(null);
-          const toReplace=suspects[0];
-          // Rimuovi dal batch accumulator se è lì
-          batchAccumulator.current=batchAccumulator.current.filter(e=>e.id!==toReplace.id);
-          // Rimuovi da expensesRef se è lì
-          const without=expensesRef.current.filter(e=>e.id!==toReplace.id);
-          if(without.length<expensesRef.current.length){
-            setExpensesSync(without);
-            LS.del(imgKey(toReplace.id));
-            if(toReplace.sharedDocId){
-              const stillUsed=without.some(e=>e.sharedDocId===toReplace.sharedDocId);
-              if(!stillUsed)LS.del(sharedImgKey(toReplace.sharedDocId));
-            }
-          }
-          doSave();
-        },
-      });
+      setDuplicateWarning({suspects,onConfirm:()=>{setDuplicateWarning(null);doSave();},onCancel:()=>setDuplicateWarning(null)});
       return;
     }
     await doSave();
@@ -1065,16 +993,6 @@ function App(){
     <div style={s.app}>
       {toast&&<div style={s.toast(toast.type)}>{toast.msg}</div>}
 
-      {/* DEBUG LOG */}
-      {debugLog.length>0&&<div style={{position:"fixed",bottom:90,left:"50%",transform:"translateX(-50%)",
-        width:"calc(100% - 32px)",maxWidth:390,zIndex:300,
-        background:"rgba(0,0,0,0.85)",borderRadius:12,padding:"10px 12px",
-        fontFamily:"'DM Mono',monospace",fontSize:9,color:"#0f0",lineHeight:1.8}}>
-        {debugLog.map((l,i)=><div key={i}>{l}</div>)}
-        <button onClick={()=>setDebugLog([])} style={{marginTop:4,background:"none",border:"1px solid #0f0",
-          color:"#0f0",borderRadius:4,padding:"2px 8px",cursor:"pointer",fontSize:9}}>clear</button>
-      </div>}
-
       {/* ── MODALE DUPLICATO ── */}
       {duplicateWarning&&(
         <div style={{position:"fixed",inset:0,background:"rgba(28,25,23,.6)",
@@ -1089,11 +1007,11 @@ function App(){
               <div>
                 <p style={{fontSize:15,fontWeight:"700",color:C.text,margin:0}}>Possibile duplicato</p>
                 <p style={{fontSize:11,color:C.muted,margin:0,marginTop:2}}>
-                  {duplicateWarning.suspects.length===1?"Una spesa simile è":"Spese simili sono"} già {batchQueueRef.current.length>1?"in coda o":""}registrat{duplicateWarning.suspects.length===1?"a":"e"}
+                  Trovata {duplicateWarning.suspects.length===1?"una spesa simile":"spese simili"} già registrata
                 </p>
               </div>
             </div>
-            <div style={{margin:"14px 0",display:"flex",flexDirection:"column",gap:6}}>
+            <div style={{margin:"14px 0",display:"flex",flexDirection:"column",gap:8}}>
               {duplicateWarning.suspects.map(e=>(
                 <div key={e.id} style={{background:C.goldLight,border:`1px solid ${C.gold}30`,
                   borderRadius:12,padding:"10px 14px",display:"flex",
@@ -1108,43 +1026,17 @@ function App(){
                 </div>
               ))}
             </div>
-            <div style={{display:"flex",flexDirection:"column",gap:8}}>
-              <button style={{...s.btn("ghost"),background:"none",border:`1.5px solid ${C.border}`,
-                borderRadius:14,padding:"13px 16px",cursor:"pointer",fontSize:13,
-                color:C.text,fontWeight:"500",textAlign:"left",display:"flex",alignItems:"center",gap:10}}
-                onClick={duplicateWarning.onCancel}>
-                <span style={{fontSize:18}}>✏️</span>
-                <div><div style={{fontWeight:"600"}}>Rivedi la spesa</div>
-                  <div style={{fontSize:11,color:C.muted,marginTop:1}}>Torna al form per correggere</div></div>
-              </button>
-              <button style={{...s.btn("ghost"),background:"none",border:`1.5px solid ${C.danger}30`,
-                borderRadius:14,padding:"13px 16px",cursor:"pointer",fontSize:13,
-                color:C.danger,fontWeight:"500",textAlign:"left",display:"flex",alignItems:"center",gap:10}}
-                onClick={duplicateWarning.onDiscard}>
-                <span style={{fontSize:18}}>🗑</span>
-                <div><div style={{fontWeight:"600"}}>Scarta questa spesa</div>
-                  <div style={{fontSize:11,color:C.muted,marginTop:1}}>
-                    {batchQueueRef.current.length>1?"Salta e continua il carosello":"Ignora senza salvare"}
-                  </div></div>
-              </button>
-              {duplicateWarning.suspects.length===1&&<button style={{...s.btn("ghost"),background:"none",
-                border:`1.5px solid ${C.info}30`,borderRadius:14,padding:"13px 16px",cursor:"pointer",
-                fontSize:13,color:C.info,fontWeight:"500",textAlign:"left",display:"flex",alignItems:"center",gap:10}}
-                onClick={duplicateWarning.onOverwrite}>
-                <span style={{fontSize:18}}>🔄</span>
-                <div><div style={{fontWeight:"600"}}>Sovrascrivi la precedente</div>
-                  <div style={{fontSize:11,color:C.muted,marginTop:1}}>Elimina il vecchio e salva questo</div></div>
-              </button>}
-              <button style={{...s.btn(),background:C.danger,borderRadius:14,padding:"13px 16px",
-                cursor:"pointer",fontSize:13,color:"#fff",fontWeight:"600",textAlign:"left",
-                display:"flex",alignItems:"center",gap:10,
-                boxShadow:`0 4px 14px rgba(185,28,28,.2)`}}
-                onClick={duplicateWarning.onConfirm}>
-                <span style={{fontSize:18}}>➕</span>
-                <div><div style={{fontWeight:"600"}}>Salva comunque</div>
-                  <div style={{fontSize:11,color:"rgba(255,255,255,.7)",marginTop:1}}>Tieni entrambe le spese</div></div>
-              </button>
-            </div>
+            <p style={{fontSize:12,color:C.muted,marginBottom:16,lineHeight:1.5}}>
+              Vuoi salvare comunque o annullare?
+            </p>
+            <button className="btn-primary" style={{...s.btn(),marginBottom:8,
+              background:C.danger,boxShadow:`0 4px 14px rgba(185,28,28,.25)`}}
+              onClick={duplicateWarning.onConfirm}>
+              Salva comunque
+            </button>
+            <button className="btn-ghost" style={s.btn("ghost")} onClick={duplicateWarning.onCancel}>
+              Annulla — rivedi la spesa
+            </button>
           </div>
         </div>
       )}
@@ -1160,7 +1052,7 @@ function App(){
                 color:C.text,letterSpacing:"-0.02em",lineHeight:1}}>SpeseFiscali</h1>
               <div style={{fontSize:10,color:C.muted,fontFamily:"'DM Mono',monospace",marginTop:3,lineHeight:1.6}}>
                 per dichiarazione redditi<br/>
-                build 14/03_Ver 15
+                build 15/03_Ver 1
               </div>
             </div>
           </div>
@@ -1432,9 +1324,7 @@ function DetailView({expense,onBack,onDelete,onEdit}){
   const downloadDoc=()=>{
     if(!doc)return;
     const a=document.createElement("a");
-    // base64 potrebbe non essere salvato — ricavalo da dataUrl se necessario
-    const b64=doc.base64||(doc.dataUrl?doc.dataUrl.split(",")[1]:null);
-    a.href=doc.isPdf?`data:application/pdf;base64,${b64}`:doc.dataUrl||`data:image/jpeg;base64,${b64}`;
+    a.href=doc.isPdf?`data:application/pdf;base64,${doc.base64}`:doc.dataUrl||`data:image/jpeg;base64,${doc.base64}`;
     a.download=`spesa_${expense.id}.${doc.isPdf?"pdf":"jpg"}`;a.click();
   };
   const cat=CATS.find(c=>c.id===expense.categoria);
@@ -1459,18 +1349,6 @@ function DetailView({expense,onBack,onDelete,onEdit}){
       </div>}
       {expense.hasDoc&&!doc&&!loadingDoc&&<div style={{...s.card,textAlign:"center",padding:"16px",marginBottom:12}}>
         <p style={{color:C.muted,fontSize:11}}>Documento non disponibile</p>
-        {/* DEBUG — rimuovere dopo il test */}
-        <div style={{marginTop:8,fontSize:9,color:C.muted,fontFamily:"'DM Mono',monospace",textAlign:"left",lineHeight:1.8}}>
-          <div>hasDoc: {String(expense.hasDoc)}</div>
-          <div>sharedDocId: {String(expense.sharedDocId||"—")}</div>
-          <div>docType: {String(expense.docType||"—")}</div>
-          <div>imgKey esiste: {String(!!LS.get(imgKey(expense.id))?.value)}</div>
-          <div>groupKey esiste: {expense.sharedDocId?String(!!LS.get(sharedImgKey(expense.sharedDocId))?.value):"—"}</div>
-          <div>groupKey size: {expense.sharedDocId?(LS.get(sharedImgKey(expense.sharedDocId))?.value?.length||0)+"B":"—"}</div>
-          <div>ALL sf:img keys: {Object.keys(localStorage).filter(k=>k.startsWith("sf:img:")).join(", ")||"nessuna"}</div>
-          <div>LS tot. keys: {Object.keys(localStorage).filter(k=>k.startsWith("sf:")).length}</div>
-          <div>LS tot. size: {Object.keys(localStorage).reduce((s,k)=>s+(localStorage.getItem(k)||"").length,0)}B</div>
-        </div>
       </div>}
 
       {/* Main card */}
@@ -1501,14 +1379,7 @@ function DetailView({expense,onBack,onDelete,onEdit}){
                 {pmTracciabile(expense.metodo_pagamento)?"💳":"💵"} {pmLabel(expense.metodo_pagamento)}
               </span>
             :"—"],
-          ...(expense.importo_detraibile&&Number(expense.importo_detraibile)>0
-            ?[["Quota detraibile",<span style={{color:C.gold,fontWeight:"600"}}>
-                {fmt(expense.importo_detraibile)} &nbsp;
-                <span style={{fontSize:10,color:C.muted,fontWeight:"400"}}>
-                  su {fmt(expense.importo)} totali
-                </span>
-              </span>]]
-            :[]),
+          ...(expense.importo_totale?[["Totale pagato",<span style={{color:C.muted}}>{fmt(expense.importo_totale)}</span>],[<span style={{color:C.gold}}>Quota detraibile</span>,<span style={{color:C.gold,fontWeight:"600"}}>{fmt(expense.importo)}</span>]]:[]),
           ["Descrizione",expense.descrizione||"—"]].map(([k,v])=>(
           <div key={k} style={{display:"flex",justifyContent:"space-between",
             padding:"10px 0",borderTop:`1px solid ${C.border}`,alignItems:"flex-start"}}>
@@ -1585,11 +1456,11 @@ function ReviewForm({form,setForm,fileData,payers,onSave,onCancel,onSkip,onBack,
         <span style={{fontSize:16}}>✏️</span>
         <span>Stai modificando una spesa esistente</span>
       </div>}
-      {form.importo_detraibile&&Number(form.importo_detraibile)>0&&<div style={{background:C.goldLight,border:`1px solid ${C.gold}40`,
+      {form.importo_totale&&<div style={{background:C.goldLight,border:`1px solid ${C.gold}40`,
         borderRadius:12,padding:"10px 14px",marginBottom:14,
         display:"flex",alignItems:"center",gap:8,fontSize:12,color:C.gold,fontWeight:"500"}}>
         <span style={{fontSize:16}}>💡</span>
-        <span>Quota detraibile rilevata: <strong>{fmt(form.importo_detraibile)}</strong> su <strong>{fmt(form.importo)}</strong> totali</span>
+        <span>Importo totale <strong>{fmt(form.importo_totale)}</strong> — salvato solo il <strong>detraibile: {fmt(form.importo)}</strong></span>
       </div>}
       {err&&<div style={{background:C.dangerLight,border:`1px solid ${C.danger}30`,
         borderRadius:12,padding:"12px 16px",marginBottom:14,fontSize:12,color:C.danger,fontWeight:"500"}}>
@@ -1625,21 +1496,6 @@ function ReviewForm({form,setForm,fileData,payers,onSave,onCancel,onSkip,onBack,
           <input style={s.input} type="date" value={form.data||""}
             onChange={e=>upd("data",e.target.value)}/>
         </div>
-      </div>
-      <div style={{marginBottom:12}}>
-        <label style={{...s.label,display:"flex",alignItems:"center",gap:6}}>
-          Quota detraibile (€)
-          {form.importo_detraibile&&Number(form.importo_detraibile)>0&&
-            <span style={{fontSize:9,background:C.gold,color:"#fff",borderRadius:4,
-              padding:"1px 6px",fontWeight:"600",letterSpacing:"0.04em"}}>RILEVATA</span>}
-          <span style={{fontSize:9,color:C.muted,fontWeight:"400"}}>— lascia vuoto se uguale all&#39;importo totale</span>
-        </label>
-        <input style={{...s.input,borderColor:form.importo_detraibile&&Number(form.importo_detraibile)>0?C.gold:C.border}}
-          type="number" step="0.01"
-          value={form.importo_detraibile||""} placeholder="es. 129.50"
-          onChange={e=>upd("importo_detraibile",e.target.value)}
-          onFocus={e=>e.target.style.borderColor=C.gold}
-          onBlur={e=>e.target.style.borderColor=form.importo_detraibile&&Number(form.importo_detraibile)>0?C.gold:C.border}/>
       </div>
       <div style={{marginBottom:12}}>
         <label style={s.label}>Descrizione</label>
@@ -1900,29 +1756,6 @@ function ExportPage({expenses,cfConfigured,cfSyncing}){
   );
 }
 
-/* ── STORAGE BAR ── */
-function StorageBar({onClearImgCache}){
-  const tot=Object.keys(localStorage).reduce((s,k)=>s+(localStorage.getItem(k)||"").length,0);
-  const imgs=Object.keys(localStorage).filter(k=>k.startsWith("sf:img:")).reduce((s,k)=>s+(localStorage.getItem(k)||"").length,0);
-  const pct=Math.min(100,Math.round(tot/5242880*100));
-  const barColor=pct>80?C.danger:pct>50?C.gold:C.success;
-  return(
-    <div style={{...s.card,marginBottom:14}}>
-      <p style={{...s.label,marginBottom:8}}>Spazio locale</p>
-      <div style={{background:C.border,borderRadius:6,height:6,marginBottom:8,overflow:"hidden"}}>
-        <div style={{height:"100%",borderRadius:6,background:barColor,
-          width:pct+"%",transition:"width .3s"}}/>
-      </div>
-      <p style={{fontSize:11,color:C.muted,marginBottom:12,fontFamily:"'DM Mono',monospace"}}>
-        {Math.round(tot/1024)}KB usati su ~5MB &middot; immagini: {Math.round(imgs/1024)}KB
-      </p>
-      <button className="btn-ghost" style={s.btn("ghost")} onClick={onClearImgCache}>
-        🗑 Libera cache immagini locale
-      </button>
-    </div>
-  );
-}
-
 function ImpostazioniPage({apiKey,cfConfigured,cfSyncing,
   onSyncCF,onSaveCF,onDisconnectCF,onResetApiKey,onClearImgCache,expenseCount}){
   const isServed=window.location.protocol!=="file:";
@@ -2007,7 +1840,12 @@ function ImpostazioniPage({apiKey,cfConfigured,cfSyncing,
       </div>
 
       {/* ── STORAGE ── */}
-      <StorageBar onClearImgCache={onClearImgCache}/>
+      <div style={{...s.card,marginBottom:14}}>
+        <p style={{...s.label,marginBottom:8}}>Spazio locale</p>
+        <button className="btn-ghost" style={s.btn("ghost")} onClick={onClearImgCache}>
+          Libera cache immagini locale
+        </button>
+      </div>
 
       {/* ── API KEY ── */}
       <div style={{...s.card,marginBottom:14}}>
