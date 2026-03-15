@@ -6,7 +6,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes"/>
 <meta name="apple-mobile-web-app-status-bar-style" content="default"/>
 <meta name="theme-color" content="#F5F1EA"/>
-<title>SpeseFiscali — build 14/03_Ver 12</title>
+<title>SpeseFiscali — build 14/03_Ver 13</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;1,400&family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet"/>
@@ -556,7 +556,8 @@ function App(){
   const[detail,setDetail]=useState(null);
   const[cfConfigured,setCfConfigured]=useState(()=>!!LS.get(KEY_CF_SECRET)?.value);
   const[cfSyncing,setCfSyncing]=useState(false);
-  const[duplicateWarning,setDuplicateWarning]=useState(null);
+  const[debugLog,setDebugLog]=useState([]);
+  const dbg=(msg)=>setDebugLog(p=>[...p.slice(-8),msg]);
   const[batchQueue,setBatchQueue]=useState([]);
   const batchQueueRef=useRef([]);
   const[batchIndex,setBatchIndex]=useState(0);
@@ -874,23 +875,24 @@ function App(){
     const newExp={...form,id,docType:fd?.mediaType||null,hasDoc:!!fd,
       sharedDocId:groupId||null};
     // Salva immagine in localStorage con compressione aggressiva (~40-70KB)
+    dbg(`doSave: fd=${fd?"ok":"NULL"} dataUrl=${fd?.dataUrl?"yes":"NO"} isPdf=${fd?.isPdf||false}`);
     if(fd&&fd.dataUrl){
-      console.log("[doSave] fd.dataUrl length:",fd.dataUrl.length,"groupId:",groupId);
+      dbg(`fd.dataUrl:${fd.dataUrl.length}B groupId:${groupId||"no"}`);
       const compressed=await compressForStorage(fd.dataUrl);
-      console.log("[doSave] compressed length:",compressed?.length||"null");
+      dbg(`compressed:${compressed?.length||"null"}B`);
       if(compressed){
         const imgData=JSON.stringify({dataUrl:compressed,mediaType:fd.mediaType||"image/jpeg",isPdf:false});
-        console.log("[doSave] imgData length:",imgData.length);
+        dbg(`imgData:${imgData.length}B`);
         const saveImg=(key)=>{
-          try{LS.set(key,imgData);console.log("[doSave] saved to key:",key);return true;}
+          try{LS.set(key,imgData);dbg(`saved:${key}`);return true;}
           catch(err){
-            console.error("[doSave] LS.set failed:",err);
+            dbg(`ERR:${err.message||err}`);
             const imgKeys=Object.keys(localStorage)
               .filter(k=>(k.startsWith("sf:img:")))
               .sort((a,b)=>(localStorage.getItem(a)||"").length-(localStorage.getItem(b)||"").length);
             for(const k of imgKeys){
               localStorage.removeItem(k);
-              try{LS.set(key,imgData);console.log("[doSave] saved after cleanup to:",key);return true;}catch{}
+              try{LS.set(key,imgData);dbg(`saved-after-cleanup:${key}`);return true;}catch{}
             }
             showToast("⚠️ Spazio esaurito — documento non salvato","err");
             return false;
@@ -899,12 +901,12 @@ function App(){
         if(groupId){
           const gKey=sharedImgKey(groupId);
           if(!LS.get(gKey))saveImg(gKey);
-          else console.log("[doSave] groupKey already exists, skip");
+          else dbg(`groupKey already exists`);
         }else{
           saveImg(imgKey(id));
         }
       }else{
-        console.warn("[doSave] compressForStorage returned null");
+        dbg(`WARN:compress returned null`);
       }
     }else if(fd&&fd.isPdf){
       // PDF: salva base64 direttamente (non comprimibile)
@@ -1063,6 +1065,16 @@ function App(){
     <div style={s.app}>
       {toast&&<div style={s.toast(toast.type)}>{toast.msg}</div>}
 
+      {/* DEBUG LOG — rimuovere dopo il test */}
+      {debugLog.length>0&&<div style={{position:"fixed",bottom:90,left:"50%",transform:"translateX(-50%)",
+        width:"calc(100% - 32px)",maxWidth:390,zIndex:300,
+        background:"rgba(0,0,0,0.85)",borderRadius:12,padding:"10px 12px",
+        fontFamily:"'DM Mono',monospace",fontSize:9,color:"#0f0",lineHeight:1.8}}>
+        {debugLog.map((l,i)=><div key={i}>{l}</div>)}
+        <button onClick={()=>setDebugLog([])} style={{marginTop:4,background:"none",border:"1px solid #0f0",
+          color:"#0f0",borderRadius:4,padding:"2px 8px",cursor:"pointer",fontSize:9}}>clear</button>
+      </div>}
+
       {/* ── MODALE DUPLICATO ── */}
       {duplicateWarning&&(
         <div style={{position:"fixed",inset:0,background:"rgba(28,25,23,.6)",
@@ -1148,7 +1160,7 @@ function App(){
                 color:C.text,letterSpacing:"-0.02em",lineHeight:1}}>SpeseFiscali</h1>
               <div style={{fontSize:10,color:C.muted,fontFamily:"'DM Mono',monospace",marginTop:3,lineHeight:1.6}}>
                 per dichiarazione redditi<br/>
-                build 14/03_Ver 12
+                build 14/03_Ver 13
               </div>
             </div>
           </div>
