@@ -6,7 +6,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes"/>
 <meta name="apple-mobile-web-app-status-bar-style" content="default"/>
 <meta name="theme-color" content="#F5F1EA"/>
-<title>SpeseFiscali — build 15/03_Ver 4</title>
+<title>SpeseFiscali — build 15/03_Ver 5</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;1,400&family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet"/>
@@ -1090,7 +1090,7 @@ function App(){
                 color:C.text,letterSpacing:"-0.02em",lineHeight:1}}>SpeseFiscali</h1>
               <div style={{fontSize:10,color:C.muted,fontFamily:"'DM Mono',monospace",marginTop:3,lineHeight:1.6}}>
                 per dichiarazione redditi<br/>
-                build 15/03_Ver 4
+                build 15/03_Ver 5
               </div>
             </div>
           </div>
@@ -1262,9 +1262,10 @@ function App(){
             <span style={{fontSize:13,color:C.danger,fontWeight:"600"}}>
               {selectedIds.length===0?"Tocca le spese da selezionare":selectedIds.length+" selezionat"+(selectedIds.length===1?"a":"e")}
             </span>
-            {filtered.length>0&&<button onClick={()=>setSelected(
-              selectedIds.length===filtered.length?new Set():new Set(filtered.map(e=>e.id))
-            )} style={{background:"none",border:"1px solid "+C.danger+"50",borderRadius:8,
+            {filtered.length>0&&<button onClick={()=>{
+              if(selectedIds.length===filtered.length){setSelected({});}
+              else{const s={};filtered.forEach(e=>{s[e.id]=true;});setSelected(s);}
+            }} style={{background:"none",border:"1px solid "+C.danger+"50",borderRadius:8,
               padding:"4px 10px",cursor:"pointer",fontSize:11,color:C.danger,fontWeight:"500"}}>
               {selectedIds.length===filtered.length?"Deseleziona tutto":"Seleziona tutto"}
             </button>}
