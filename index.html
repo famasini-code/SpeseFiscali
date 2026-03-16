@@ -6,7 +6,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes"/>
 <meta name="apple-mobile-web-app-status-bar-style" content="default"/>
 <meta name="theme-color" content="#F5F1EA"/>
-<title>SpeseFiscali — build 16/03_Ver 2</title>
+<title>SpeseFiscali — build 16/03_Ver 3</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;1,400&family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet"/>
@@ -604,7 +604,38 @@ function App(){
     setLoading(false);
   },[]);
 
-  // Protegge da ricarica accidentale durante analisi o review
+  // Refs per leggere lo stato corrente nel handler senza closure stale
+  const pageRef=useRef(page);
+  const stepRef=useRef(step);
+  const detailRef=useRef(detail);
+  const selModeRef=useRef(selMode);
+  useEffect(()=>{pageRef.current=page;},[page]);
+  useEffect(()=>{stepRef.current=step;},[step]);
+  useEffect(()=>{detailRef.current=detail;},[detail]);
+  useEffect(()=>{selModeRef.current=selMode;},[selMode]);
+
+  // Intercetta il tasto Back di Android — pushState UNA SOLA VOLTA al mount
+  useEffect(()=>{
+    history.pushState({sfApp:true},"");
+    const handler=()=>{
+      history.pushState({sfApp:true},"");
+      const curStep=stepRef.current;
+      const curDetail=detailRef.current;
+      const curSel=selModeRef.current;
+      const curPage=pageRef.current;
+      if(curStep==="review"||curStep==="loading"){
+        if(batchQueueRef.current.length>1){isSavingRef.current=false;setBatchState([],0,0);}
+        setStep("idle");setFileDataSync(null);setForm({});setEditingExpense(null);
+        return;
+      }
+      if(curDetail){setDetail(null);return;}
+      if(curSel){exitSel();return;}
+      if(curPage!=="registra"){setPage("registra");return;}
+      // Su Registra: non fare nulla, non esce dall'app
+    };
+    window.addEventListener("popstate",handler);
+    return()=>window.removeEventListener("popstate",handler);
+  },[]);
   useEffect(()=>{
     if(step==="loading"||step==="review"){
       const handler=e=>{e.preventDefault();e.returnValue="";};
@@ -1059,7 +1090,7 @@ function App(){
             <div>
               <h1 style={{fontFamily:"'Cormorant Garamond',serif",fontWeight:600,fontSize:20,
                 color:C.text,letterSpacing:"-0.02em",lineHeight:1}}>SpeseFiscali</h1>
-              <div style={{fontSize:10,color:C.muted,fontFamily:"'DM Mono',monospace",marginTop:3,lineHeight:1.6}}>per dichiarazione redditi<br/>build 16/03_Ver 2</div>
+              <div style={{fontSize:10,color:C.muted,fontFamily:"'DM Mono',monospace",marginTop:3,lineHeight:1.6}}>per dichiarazione redditi<br/>build 16/03_Ver 3</div>
             </div>
           </div>
           <button onClick={()=>{setPage("impostazioni");setDetail(null);}}
