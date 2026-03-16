@@ -6,7 +6,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes"/>
 <meta name="apple-mobile-web-app-status-bar-style" content="default"/>
 <meta name="theme-color" content="#F5F1EA"/>
-<title>SpeseFiscali — build 16/03_Ver 1</title>
+<title>SpeseFiscali — build 16/03_Ver 2</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;1,400&family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet"/>
@@ -914,7 +914,7 @@ function App(){
   const[editingExpense,setEditingExpense]=useState(null);
   const[selMode,setSelMode]=useState(false);
   const[selIds,setSelIds]=useState([]);
-  const toggleSel=(id)=>setSelIds(p=>p.includes(id)?p.filter(x=>x!==id):[...p,id]);
+  const toggleSel=(id)=>{const n=Number(id);setSelIds(p=>p.includes(n)?p.filter(x=>x!==n):[...p,n]);};
   const exitSel=()=>{setSelMode(false);setSelIds([]);};
 
   const editExpense=(expense)=>{
@@ -970,15 +970,17 @@ function App(){
   };
 
   const deleteMultiple=async(ids)=>{
-    const updated=expensesRef.current.filter(e=>!ids.includes(e.id));
-    ids.forEach(id=>{
-      const e=expensesRef.current.find(x=>x.id===id);
+    const numIds=ids.map(Number);
+    const updated=expensesRef.current.filter(e=>!numIds.includes(Number(e.id)));
+    numIds.forEach(id=>{
+      const e=expensesRef.current.find(x=>Number(x.id)===id);
       LS.del(imgKey(id));
       if(e&&e.sharedDocId&&!updated.some(x=>x.sharedDocId===e.sharedDocId))LS.del(sharedImgKey(e.sharedDocId));
     });
     setExpensesSync(updated);
     await persistExpenses(updated);
-    showToast(ids.length+" spese eliminate","err");
+    if(cfService.configured)numIds.forEach(id=>cfService.deleteDocument(id).catch(()=>{}));
+    showToast(numIds.length+" spese eliminate","err");
     exitSel();
   };
   const years=[...new Set(expenses.map(e=>e.data?.slice(0,4)))].filter(Boolean).sort().reverse();
@@ -1057,7 +1059,7 @@ function App(){
             <div>
               <h1 style={{fontFamily:"'Cormorant Garamond',serif",fontWeight:600,fontSize:20,
                 color:C.text,letterSpacing:"-0.02em",lineHeight:1}}>SpeseFiscali</h1>
-              <div style={{fontSize:10,color:C.muted,fontFamily:"'DM Mono',monospace",marginTop:3,lineHeight:1.6}}>per dichiarazione redditi<br/>build 16/03_Ver 1</div>
+              <div style={{fontSize:10,color:C.muted,fontFamily:"'DM Mono',monospace",marginTop:3,lineHeight:1.6}}>per dichiarazione redditi<br/>build 16/03_Ver 2</div>
             </div>
           </div>
           <button onClick={()=>{setPage("impostazioni");setDetail(null);}}
