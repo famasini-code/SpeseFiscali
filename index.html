@@ -6,7 +6,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes"/>
 <meta name="apple-mobile-web-app-status-bar-style" content="default"/>
 <meta name="theme-color" content="#F5F1EA"/>
-<title>SpeseFiscali — build 16/03_Ver 3</title>
+<title>SpeseFiscali — build 16/03_Ver 4</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;1,400&family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet"/>
@@ -655,6 +655,7 @@ function App(){
   };
 
   const clearImgCache=()=>{
+    if(isSavingRef.current)return; // non cancellare durante un batch attivo
     const keys=Object.keys(localStorage).filter(k=>k.startsWith("sf:img:"));
     keys.forEach(k=>localStorage.removeItem(k));
     if(keys.length>0)showToast("Cache locale liberata","info");
@@ -834,27 +835,30 @@ function App(){
     try{
       const results=await analyzeFile(b64,mt,apiKey);
       if(results.length>1){
-        // Più scontrini in una sola immagine → inseriscili nel carosello
         const forms=await Promise.all(results.map(r=>buildFormFromRaw(r)));
-        const groupId=Date.now(); // ID condiviso per l'immagine comune
-        // Salva immagine subito, una volta sola
+        const groupId=Date.now();
+        // Salva immagine con await — SINCRONO, prima di creare il carosello
+        let savedGroupImg=false;
         if(currentFileData?.dataUrl){
-          compressForStorage(currentFileData.dataUrl).then(compressed=>{
-            if(compressed){
-              const imgData=JSON.stringify({dataUrl:compressed,mediaType:mt||"image/jpeg",isPdf:false});
-              try{LS.set(sharedImgKey(groupId),imgData);}catch{
-                const imgKeys=Object.keys(localStorage).filter(k=>k.startsWith("sf:img:"));
-                imgKeys.forEach(k=>localStorage.removeItem(k));
-                try{LS.set(sharedImgKey(groupId),imgData);}catch{}
-              }
+          const compressed=await compressForStorage(currentFileData.dataUrl);
+          if(compressed){
+            const imgData=JSON.stringify({dataUrl:compressed,mediaType:mt||"image/jpeg",isPdf:false});
+            try{
+              LS.set(sharedImgKey(groupId),imgData);
+              savedGroupImg=true;
+            }catch{
+              // Spazio pieno: libera e riprova
+              Object.keys(localStorage).filter(k=>k.startsWith("sf:img:")).forEach(k=>localStorage.removeItem(k));
+              try{LS.set(sharedImgKey(groupId),imgData);savedGroupImg=true;}catch{}
             }
-          });
+          }
         }
         const syntheticItems=forms.map(f=>({
           base64:b64,mediaType:mt,
           dataUrl:currentFileData?.dataUrl||null,
           isPdf:currentFileData?.isPdf||false,
           sharedDocGroupId:groupId,
+          groupImgSaved:savedGroupImg, // flag: immagine già in LS, doSave non deve risalvarla
           _prebuiltForm:f
         }));
         setBatchState(syntheticItems, 0, syntheticItems.length);
@@ -902,17 +906,22 @@ function App(){
     const groupId=fd?.sharedDocGroupId||null;
     const newExp={...form,id,docType:fd?.mediaType||null,hasDoc:!!fd,sharedDocId:groupId||null};
     if(fd&&fd.dataUrl){
-      const compressed=await compressForStorage(fd.dataUrl);
-      if(compressed){
-        const imgData=JSON.stringify({dataUrl:compressed,mediaType:fd.mediaType||"image/jpeg",isPdf:false});
-        const saveImg=(key)=>{try{LS.set(key,imgData);}catch{const imgKeys=Object.keys(localStorage).filter(k=>k.startsWith("sf:img:"));imgKeys.forEach(k=>localStorage.removeItem(k));try{LS.set(key,imgData);}catch{showToast("Spazio esaurito: doc non salvato","err");}}};
-        if(groupId){const gKey=sharedImgKey(groupId);if(!LS.get(gKey))saveImg(gKey);}
-        else saveImg(imgKey(id));
+      // Se immagine condivisa già salvata in analyze, non fare nulla
+      // Altrimenti salva (singolo, o fallback se l'eager save era fallito)
+      const alreadySaved=groupId&&fd.groupImgSaved&&LS.get(sharedImgKey(groupId));
+      if(!alreadySaved){
+        const compressed=await compressForStorage(fd.dataUrl);
+        if(compressed){
+          const imgData=JSON.stringify({dataUrl:compressed,mediaType:fd.mediaType||"image/jpeg",isPdf:false});
+          const saveImg=(key)=>{try{LS.set(key,imgData);}catch{const imgKeys=Object.keys(localStorage).filter(k=>k.startsWith("sf:img:"));imgKeys.forEach(k=>localStorage.removeItem(k));try{LS.set(key,imgData);}catch{showToast("Spazio esaurito: doc non salvato","err");}}};
+          if(groupId)saveImg(sharedImgKey(groupId));
+          else saveImg(imgKey(id));
+        }
       }
     }else if(fd&&fd.isPdf&&fd.base64){
       const imgData=JSON.stringify({dataUrl:null,base64:fd.base64,mediaType:"application/pdf",isPdf:true});
       const key=groupId?sharedImgKey(groupId):imgKey(id);
-      if(!groupId||!LS.get(key)){try{LS.set(key,imgData);}catch{}}
+      if(!LS.get(key)){try{LS.set(key,imgData);}catch{}}
     }
     const isBatch=batchQueueRef.current.length>1;
     if(isBatch){
@@ -1090,7 +1099,7 @@ function App(){
             <div>
               <h1 style={{fontFamily:"'Cormorant Garamond',serif",fontWeight:600,fontSize:20,
                 color:C.text,letterSpacing:"-0.02em",lineHeight:1}}>SpeseFiscali</h1>
-              <div style={{fontSize:10,color:C.muted,fontFamily:"'DM Mono',monospace",marginTop:3,lineHeight:1.6}}>per dichiarazione redditi<br/>build 16/03_Ver 3</div>
+              <div style={{fontSize:10,color:C.muted,fontFamily:"'DM Mono',monospace",marginTop:3,lineHeight:1.6}}>per dichiarazione redditi<br/>build 16/03_Ver 4</div>
             </div>
           </div>
           <button onClick={()=>{setPage("impostazioni");setDetail(null);}}
