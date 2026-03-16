@@ -6,7 +6,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes"/>
 <meta name="apple-mobile-web-app-status-bar-style" content="default"/>
 <meta name="theme-color" content="#F5F1EA"/>
-<title>SpeseFiscali — build 15/03_Ver 5</title>
+<title>SpeseFiscali — build 16/03_Ver 1</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;1,400&family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet"/>
@@ -168,17 +168,13 @@ const resizeImage=(dataUrl,maxPx=1500,quality=0.78)=>new Promise(res=>{
   img.src=dataUrl;
 });
 
-
-// Compressione aggressiva per localStorage: max 700px, qualita 0.45
 const compressForStorage=(dataUrl)=>new Promise(res=>{
   if(!dataUrl){res(null);return;}
   const img=new Image();
   img.onload=()=>{
     const scale=Math.min(1,700/Math.max(img.width,img.height));
-    const w=Math.round(img.width*scale);
-    const h=Math.round(img.height*scale);
-    const c=document.createElement("canvas");
-    c.width=w;c.height=h;
+    const w=Math.round(img.width*scale),h=Math.round(img.height*scale);
+    const c=document.createElement("canvas");c.width=w;c.height=h;
     c.getContext("2d").drawImage(img,0,0,w,h);
     res(c.toDataURL("image/jpeg",0.45));
   };
@@ -536,8 +532,10 @@ function App(){
   const[apiKey,setApiKey]=useState(()=>LS.get(KEY_APIKEY)?.value||null);
   const[expenses,setExpenses]=useState([]);
   const expensesRef=useRef([]);
-  const isSavingRef=useRef(false); // blocca CF load durante batch save
-  const batchAccumulator=useRef([]); // accumula spese batch, commit atomico alla fine
+  const isSavingRef=useRef(false);
+  const batchAccumulator=useRef([]);
+  const fileDataRef=useRef(null);
+  const setFileDataSync=(val)=>{fileDataRef.current=val;setFileData(val);};
   const setExpensesSync=(val)=>{
     const next=typeof val==="function"?val(expensesRef.current):val;
     expensesRef.current=next;
@@ -546,8 +544,6 @@ function App(){
   const[page,setPage]=useState("registra");
   const[step,setStep]=useState("idle");
   const[fileData,setFileData]=useState(null);
-  const fileDataRef=useRef(null);
-  const setFileDataSync=(val)=>{fileDataRef.current=val;setFileData(val);};
   const[form,setForm]=useState({});
   const[err,setErr]=useState(null);
   const[toast,setToast]=useState(null);
@@ -628,11 +624,10 @@ function App(){
   };
 
   const clearImgCache=()=>{
-    const imgKeys=Object.keys(localStorage).filter(k=>k.startsWith("sf:img:"));
-    imgKeys.forEach(k=>localStorage.removeItem(k));
-    if(imgKeys.length>0)showToast("Cache locale liberata","info");
+    const keys=Object.keys(localStorage).filter(k=>k.startsWith("sf:img:"));
+    keys.forEach(k=>localStorage.removeItem(k));
+    if(keys.length>0)showToast("Cache locale liberata","info");
   };
-
   const persistExpenses=async(list)=>{
     LS.set(KEY_LS,JSON.stringify(list));
     if(cfService.configured){
@@ -774,7 +769,6 @@ function App(){
       const item=queue[next];
       setFileDataSync(item);
       setErr(null);
-      window.scrollTo({top:0,behavior:"smooth"});
       if(item._prebuiltForm){
         const warn=(!item._prebuiltForm.beneficiario&&!item._prebuiltForm.importo)?"⚠️ Estrazione parziale — verifica i campi":null;
         setForm(item._prebuiltForm);
@@ -796,6 +790,7 @@ function App(){
         if(cfService.configured)persistExpenses(final).catch(()=>{});
         showToast(accumulated.length+" spese salvate");
       }
+      window.scrollTo({top:0,behavior:"smooth"});
       setPage("archivio");
     }
   };
@@ -811,18 +806,18 @@ function App(){
         // Più scontrini in una sola immagine → inseriscili nel carosello
         const forms=await Promise.all(results.map(r=>buildFormFromRaw(r)));
         const groupId=Date.now(); // ID condiviso per l'immagine comune
-        // Salva l'immagine subito una volta sola — non aspettare i salvataggi singoli
+        // Salva immagine subito, una volta sola
         if(currentFileData?.dataUrl){
-          const compressed=await compressForStorage(currentFileData.dataUrl);
-          if(compressed){
-            const imgData=JSON.stringify({dataUrl:compressed,mediaType:mt||"image/jpeg",isPdf:false});
-            try{LS.set(sharedImgKey(groupId),imgData);}
-            catch{
-              const imgKeys=Object.keys(localStorage).filter(k=>k.startsWith("sf:img:"));
-              imgKeys.forEach(k=>localStorage.removeItem(k));
-              try{LS.set(sharedImgKey(groupId),imgData);}catch{}
+          compressForStorage(currentFileData.dataUrl).then(compressed=>{
+            if(compressed){
+              const imgData=JSON.stringify({dataUrl:compressed,mediaType:mt||"image/jpeg",isPdf:false});
+              try{LS.set(sharedImgKey(groupId),imgData);}catch{
+                const imgKeys=Object.keys(localStorage).filter(k=>k.startsWith("sf:img:"));
+                imgKeys.forEach(k=>localStorage.removeItem(k));
+                try{LS.set(sharedImgKey(groupId),imgData);}catch{}
+              }
             }
-          }
+          });
         }
         const syntheticItems=forms.map(f=>({
           base64:b64,mediaType:mt,
@@ -833,7 +828,6 @@ function App(){
         }));
         setBatchState(syntheticItems, 0, syntheticItems.length);
         isSavingRef.current=true;
-        batchAccumulator.current=[];
         setFileDataSync(syntheticItems[0]);
         const firstForm=forms[0];
         const warn=(!firstForm.beneficiario&&!firstForm.importo)?"⚠️ Estrazione parziale — verifica i campi":null;
@@ -875,25 +869,14 @@ function App(){
     const id=Date.now();
     const fd=fileDataRef.current;
     const groupId=fd?.sharedDocGroupId||null;
-    const newExp={...form,id,docType:fd?.mediaType||null,hasDoc:!!fd,
-      sharedDocId:groupId||null};
-    // Salva immagine compressa in localStorage
+    const newExp={...form,id,docType:fd?.mediaType||null,hasDoc:!!fd,sharedDocId:groupId||null};
     if(fd&&fd.dataUrl){
       const compressed=await compressForStorage(fd.dataUrl);
       if(compressed){
         const imgData=JSON.stringify({dataUrl:compressed,mediaType:fd.mediaType||"image/jpeg",isPdf:false});
-        const saveImg=(key)=>{
-          try{LS.set(key,imgData);return true;}
-          catch{
-            const imgKeys=Object.keys(localStorage).filter(k=>k.startsWith("sf:img:"));
-            imgKeys.forEach(k=>localStorage.removeItem(k));
-            try{LS.set(key,imgData);return true;}catch{}
-            showToast("Spazio esaurito: doc non salvato","err");
-            return false;
-          }
-        };
+        const saveImg=(key)=>{try{LS.set(key,imgData);}catch{const imgKeys=Object.keys(localStorage).filter(k=>k.startsWith("sf:img:"));imgKeys.forEach(k=>localStorage.removeItem(k));try{LS.set(key,imgData);}catch{showToast("Spazio esaurito: doc non salvato","err");}}};
         if(groupId){const gKey=sharedImgKey(groupId);if(!LS.get(gKey))saveImg(gKey);}
-        else{saveImg(imgKey(id));}
+        else saveImg(imgKey(id));
       }
     }else if(fd&&fd.isPdf&&fd.base64){
       const imgData=JSON.stringify({dataUrl:null,base64:fd.base64,mediaType:"application/pdf",isPdf:true});
@@ -903,21 +886,15 @@ function App(){
     const isBatch=batchQueueRef.current.length>1;
     if(isBatch){
       batchAccumulator.current.push(newExp);
-      const savedN=batchIndexRef.current+1;
-      const total=batchQueueRef.current.length;
-      showToast("Spesa "+savedN+"/"+total+" salvata");
+      showToast("Spesa "+(batchIndexRef.current+1)+"/"+batchQueueRef.current.length+" salvata");
       batchNext();
     }else{
       const updated=[newExp,...expensesRef.current];
       setExpensesSync(updated);
       await persistExpenses(updated);
       if(fd&&cfService.configured){
-        if(groupId){
-          const isFirst=!expensesRef.current.slice(1).some(e=>e.sharedDocId===groupId);
-          if(isFirst)cfService.saveDocument("group_"+groupId,fd).catch(()=>{});
-        }else{
-          cfService.saveDocument(id,fd).catch(()=>{});
-        }
+        if(groupId){const isFirst=!expensesRef.current.slice(1).some(e=>e.sharedDocId===groupId);if(isFirst)cfService.saveDocument("group_"+groupId,fd).catch(()=>{});}
+        else cfService.saveDocument(id,fd).catch(()=>{});
       }
       showToast(fd?"Spesa e allegato salvati":"Spesa salvata");
       setStep("idle");setFileDataSync(null);setForm({});setPage("archivio");
@@ -935,12 +912,10 @@ function App(){
   };
 
   const[editingExpense,setEditingExpense]=useState(null);
-  const[selectMode,setSelectMode]=useState(false);
-  const[selected,setSelected]=useState({});
-  const toggleSelect=(id)=>setSelected(prev=>{const s={...prev};s[id]?delete s[id]:s[id]=true;return s;});
-  const exitSelectMode=()=>{setSelectMode(false);setSelected({});};
-  const selectedIds=Object.keys(selected).map(Number);
-  const isSelected=(id)=>!!selected[id];
+  const[selMode,setSelMode]=useState(false);
+  const[selIds,setSelIds]=useState([]);
+  const toggleSel=(id)=>setSelIds(p=>p.includes(id)?p.filter(x=>x!==id):[...p,id]);
+  const exitSel=()=>{setSelMode(false);setSelIds([]);};
 
   const editExpense=(expense)=>{
     // Carica la spesa nel form e vai in modalità edit
@@ -995,24 +970,18 @@ function App(){
   };
 
   const deleteMultiple=async(ids)=>{
-    const idSet=new Set(ids);
-    const current=expensesRef.current;
-    const updated=current.filter(e=>!idSet.has(e.id));
-    // Pulizia immagini
+    const updated=expensesRef.current.filter(e=>!ids.includes(e.id));
     ids.forEach(id=>{
-      const e=current.find(x=>x.id===id);
+      const e=expensesRef.current.find(x=>x.id===id);
       LS.del(imgKey(id));
-      if(e?.sharedDocId){
-        const stillUsed=updated.some(x=>x.sharedDocId===e.sharedDocId);
-        if(!stillUsed)LS.del(sharedImgKey(e.sharedDocId));
-      }
+      if(e&&e.sharedDocId&&!updated.some(x=>x.sharedDocId===e.sharedDocId))LS.del(sharedImgKey(e.sharedDocId));
     });
     setExpensesSync(updated);
     await persistExpenses(updated);
-    if(cfService.configured)ids.forEach(id=>cfService.deleteDocument(id).catch(()=>{}));
     showToast(ids.length+" spese eliminate","err");
-    exitSelectMode();
+    exitSel();
   };
+  const years=[...new Set(expenses.map(e=>e.data?.slice(0,4)))].filter(Boolean).sort().reverse();
   const filtered=expenses.filter(e=>{
     const y=e.data?.slice(0,4)||curYear;
     return(filterYear==="all"||y===filterYear)&&(filterCat==="all"||e.categoria===filterCat)&&(filterPayer==="all"||e.pagante===filterPayer)&&(filterRef==="all"||e.riferimento===filterRef);
@@ -1088,10 +1057,7 @@ function App(){
             <div>
               <h1 style={{fontFamily:"'Cormorant Garamond',serif",fontWeight:600,fontSize:20,
                 color:C.text,letterSpacing:"-0.02em",lineHeight:1}}>SpeseFiscali</h1>
-              <div style={{fontSize:10,color:C.muted,fontFamily:"'DM Mono',monospace",marginTop:3,lineHeight:1.6}}>
-                per dichiarazione redditi<br/>
-                build 15/03_Ver 5
-              </div>
+              <div style={{fontSize:10,color:C.muted,fontFamily:"'DM Mono',monospace",marginTop:3,lineHeight:1.6}}>per dichiarazione redditi<br/>build 16/03_Ver 1</div>
             </div>
           </div>
           <button onClick={()=>{setPage("impostazioni");setDetail(null);}}
@@ -1233,7 +1199,7 @@ function App(){
             </div>
           </div>
 
-          {/* Totale + toolbar selezione */}
+          {/* Totale */}
           <div style={{background:`linear-gradient(135deg,${C.green} 0%,${C.greenMid} 100%)`,
             borderRadius:18,padding:"18px 20px",marginBottom:16,
             boxShadow:`0 6px 24px rgba(26,58,42,.2)`}}>
@@ -1246,29 +1212,27 @@ function App(){
                   {fmt(total)}
                 </p>
               </div>
-              <button onClick={selectMode?exitSelectMode:()=>setSelectMode(true)}
+              <button onClick={selMode?exitSel:()=>setSelMode(true)}
                 style={{background:"rgba(255,255,255,.15)",border:"1.5px solid rgba(255,255,255,.3)",
                   borderRadius:10,padding:"7px 14px",cursor:"pointer",
                   fontSize:12,color:"#fff",fontWeight:"600",fontFamily:"'DM Sans',sans-serif"}}>
-                {selectMode?"✕ Annulla":"☑ Seleziona"}
+                {selMode?"Annulla":"Seleziona"}
               </button>
             </div>
           </div>
-
-          {/* Banner selezione attiva */}
-          {selectMode&&<div style={{background:C.dangerLight,border:"1.5px solid "+C.danger+"40",
-            borderRadius:14,padding:"12px 16px",marginBottom:12,
+          {selMode&&selIds.length>0&&<div style={{background:C.dangerLight,
+            border:"1.5px solid "+C.danger+"40",borderRadius:14,
+            padding:"12px 16px",marginBottom:12,
             display:"flex",justifyContent:"space-between",alignItems:"center"}}>
             <span style={{fontSize:13,color:C.danger,fontWeight:"600"}}>
-              {selectedIds.length===0?"Tocca le spese da selezionare":selectedIds.length+" selezionat"+(selectedIds.length===1?"a":"e")}
+              {selIds.length+" selezionat"+(selIds.length===1?"a":"e")}
             </span>
-            {filtered.length>0&&<button onClick={()=>{
-              if(selectedIds.length===filtered.length){setSelected({});}
-              else{const s={};filtered.forEach(e=>{s[e.id]=true;});setSelected(s);}
-            }} style={{background:"none",border:"1px solid "+C.danger+"50",borderRadius:8,
-              padding:"4px 10px",cursor:"pointer",fontSize:11,color:C.danger,fontWeight:"500"}}>
-              {selectedIds.length===filtered.length?"Deseleziona tutto":"Seleziona tutto"}
-            </button>}
+            <button onClick={()=>deleteMultiple(selIds)}
+              style={{background:C.danger,border:"none",borderRadius:10,
+                padding:"8px 16px",cursor:"pointer",
+                fontSize:13,color:"#fff",fontWeight:"700",fontFamily:"'DM Sans',sans-serif"}}>
+              Elimina
+            </button>
           </div>}
 
           {filtered.length===0&&<div style={{textAlign:"center",padding:"50px 20px"}}>
@@ -1279,17 +1243,14 @@ function App(){
           {filtered.map((e,i)=>(
             <div key={e.id} className="expense-card card-enter"
               style={{...s.card,cursor:"pointer",animationDelay:`${i*0.04}s`,
-                outline:selectMode&&isSelected(e.id)?"2.5px solid "+C.danger:"none",
-                outlineOffset:"-2px"}}
-              onClick={()=>selectMode?toggleSelect(e.id):setDetail(e.id)}>
+                outline:selMode&&selIds.includes(e.id)?"2px solid "+C.danger:"none"}}
+              onClick={()=>selMode?toggleSel(e.id):setDetail(e.id)}>
               <div style={{display:"flex",gap:12,alignItems:"center"}}>
-                {selectMode&&<div style={{width:24,height:24,borderRadius:6,flexShrink:0,
-                  border:"2px solid "+(isSelected(e.id)?C.danger:C.border),
-                  background:isSelected(e.id)?C.danger:"transparent",
+                {selMode&&<div style={{width:22,height:22,borderRadius:6,flexShrink:0,
+                  border:"2px solid "+(selIds.includes(e.id)?C.danger:C.border),
+                  background:selIds.includes(e.id)?C.danger:"transparent",
                   display:"flex",alignItems:"center",justifyContent:"center",
-                  fontSize:14,color:"#fff",transition:"all .15s"}}>
-                  {isSelected(e.id)?"✓":""}
-                </div>}
+                  fontSize:13,color:"#fff"}}>{selIds.includes(e.id)?"+":""}</div>}
                 <div style={{width:44,height:44,borderRadius:14,background:catBg(e.categoria),
                   display:"flex",alignItems:"center",justifyContent:"center",fontSize:22,flexShrink:0}}>
                   {catIcon(e.categoria)}
@@ -1333,7 +1294,6 @@ function App(){
           <ImpostazioniPage
             apiKey={apiKey} cfConfigured={cfConfigured} cfSyncing={cfSyncing}
             onSyncCF={syncFromCF}
-            onClearImgCache={clearImgCache}
             onSaveCF={(secret)=>{
               cfService.configure(CF_WORKER_URL,secret);
               setCfConfigured(!!secret);
@@ -1348,23 +1308,6 @@ function App(){
             expenseCount={expenses.length}/>
         )}
       </div>
-
-      {/* ── MULTI-SELECT DELETE BAR ── */}
-      {selectMode&&selectedIds.length>0&&<div style={{position:"fixed",bottom:90,left:"50%",
-        transform:"translateX(-50%)",width:"calc(100% - 32px)",maxWidth:390,zIndex:250,
-        background:C.danger,borderRadius:16,padding:"14px 20px",
-        display:"flex",justifyContent:"space-between",alignItems:"center",
-        boxShadow:"0 8px 32px rgba(185,28,28,.35)"}}>
-        <span style={{color:"#fff",fontSize:13,fontWeight:"600"}}>
-          {selectedIds.length} spese selezionate
-        </span>
-        <button onClick={()=>deleteMultiple(selectedIds)}
-          style={{background:"rgba(255,255,255,.2)",border:"1.5px solid rgba(255,255,255,.4)",
-            borderRadius:10,padding:"8px 18px",cursor:"pointer",
-            fontSize:13,color:"#fff",fontWeight:"700",fontFamily:"'DM Sans',sans-serif"}}>
-          🗑 Elimina
-        </button>
-      </div>}
 
       {/* ── FLOATING NAV ── */}
       <nav style={s.nav}>
@@ -1842,7 +1785,7 @@ function ExportPage({expenses,cfConfigured,cfSyncing}){
 }
 
 function ImpostazioniPage({apiKey,cfConfigured,cfSyncing,
-  onSyncCF,onSaveCF,onDisconnectCF,onResetApiKey,onClearImgCache,expenseCount}){
+  onSyncCF,onSaveCF,onDisconnectCF,onResetApiKey,expenseCount}){
   const isServed=window.location.protocol!=="file:";
   const[cfSecret,setCfSecret]=useState(()=>LS.get(KEY_CF_SECRET)?.value||"");
   const[cfShowSecret,setCfShowSecret]=useState(false);
@@ -1922,14 +1865,6 @@ function ImpostazioniPage({apiKey,cfConfigured,cfSyncing,
             Disconnetti
           </button>
         </>}
-      </div>
-
-      {/* ── STORAGE ── */}
-      <div style={{...s.card,marginBottom:14}}>
-        <p style={{...s.label,marginBottom:8}}>Spazio locale</p>
-        <button className="btn-ghost" style={s.btn("ghost")} onClick={onClearImgCache}>
-          Libera cache immagini locale
-        </button>
       </div>
 
       {/* ── API KEY ── */}
