@@ -6,7 +6,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes"/>
 <meta name="apple-mobile-web-app-status-bar-style" content="default"/>
 <meta name="theme-color" content="#F5F1EA"/>
-<title>SpeseFiscali — build 20/03_Ver 7</title>
+<title>SpeseFiscali — build 20/03_Ver 8</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;1,400&family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet"/>
@@ -856,7 +856,6 @@ function App(){
       if(results.length>1){
         const forms=await Promise.all(results.map(r=>buildFormFromRaw(r)));
         const groupId=Date.now();
-        const groupId=Date.now();
         // Salva immagine condivisa UNA SOLA VOLTA con await — prima del carosello
         if(currentFileData?.dataUrl){
           const imgData=JSON.stringify({dataUrl:currentFileData.dataUrl,mediaType:mt||"image/jpeg",isPdf:false});
@@ -1105,7 +1104,7 @@ function App(){
             <div>
               <h1 style={{fontFamily:"'Cormorant Garamond',serif",fontWeight:600,fontSize:20,
                 color:C.text,letterSpacing:"-0.02em",lineHeight:1}}>SpeseFiscali</h1>
-              <div style={{fontSize:10,color:C.muted,fontFamily:"'DM Mono',monospace",marginTop:3,lineHeight:1.6}}>per dichiarazione redditi<br/>build 20/03_Ver 7</div>
+              <div style={{fontSize:10,color:C.muted,fontFamily:"'DM Mono',monospace",marginTop:3,lineHeight:1.6}}>per dichiarazione redditi<br/>build 20/03_Ver 8</div>
             </div>
           </div>
           <button onClick={()=>{setPage("impostazioni");setDetail(null);}}
