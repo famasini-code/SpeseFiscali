@@ -6,7 +6,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes"/>
 <meta name="apple-mobile-web-app-status-bar-style" content="default"/>
 <meta name="theme-color" content="#F5F1EA"/>
-<title>SpeseFiscali — build 20/03_Ver 6</title>
+<title>SpeseFiscali — build 20/03_Ver 7</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;1,400&family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet"/>
@@ -821,23 +821,23 @@ function App(){
         LS.set(KEY_LS,JSON.stringify(final));
         if(cfService.configured){
           setCfSyncing(true);
-          // Salva spese su CF
-          cfService.saveExpenses(final)
-            .catch(()=>{})
-            .finally(()=>setCfSyncing(false));
-          // Salva documenti su CF per ogni spesa con immagine
-          // (le immagini restano in localStorage finché CF non le ha)
-          accumulated.forEach(exp=>{
-            if(exp.hasDoc){
-              const r=LS.get(imgKey(exp.id));
-              if(r?.value){
-                try{
-                  const doc=JSON.parse(r.value);
-                  cfService.saveDocument(exp.id,doc).catch(()=>{});
-                }catch{}
-              }
+          cfService.saveExpenses(final).catch(()=>{}).finally(()=>setCfSyncing(false));
+          // Salva immagine condivisa su CF una sola volta
+          const sharedId=accumulated.find(e=>e.sharedDocId)?.sharedDocId;
+          if(sharedId){
+            const r=LS.get(sharedImgKey(sharedId));
+            if(r?.value){
+              try{const doc=JSON.parse(r.value);cfService.saveDocument("group_"+sharedId,doc).catch(()=>{});}catch{}
             }
-          });
+          } else {
+            // Spese singole: salva doc individuale
+            accumulated.forEach(exp=>{
+              if(exp.hasDoc){
+                const r=LS.get(imgKey(exp.id));
+                if(r?.value){try{cfService.saveDocument(exp.id,JSON.parse(r.value)).catch(()=>{});}catch{}}
+              }
+            });
+          }
         }
         showToast(accumulated.length+" spese salvate");
       }
@@ -856,10 +856,21 @@ function App(){
       if(results.length>1){
         const forms=await Promise.all(results.map(r=>buildFormFromRaw(r)));
         const groupId=Date.now();
+        const groupId=Date.now();
+        // Salva immagine condivisa UNA SOLA VOLTA con await — prima del carosello
+        if(currentFileData?.dataUrl){
+          const imgData=JSON.stringify({dataUrl:currentFileData.dataUrl,mediaType:mt||"image/jpeg",isPdf:false});
+          try{LS.set(sharedImgKey(groupId),imgData);}
+          catch{
+            Object.keys(localStorage).filter(k=>k.startsWith("sf:img:")).forEach(k=>localStorage.removeItem(k));
+            try{LS.set(sharedImgKey(groupId),imgData);}catch{}
+          }
+        }
         const syntheticItems=forms.map(f=>({
           base64:b64,mediaType:mt,
           dataUrl:currentFileData?.dataUrl||null,
           isPdf:currentFileData?.isPdf||false,
+          sharedDocGroupId:groupId,
           _prebuiltForm:f
         }));
         setBatchState(syntheticItems, 0, syntheticItems.length);
@@ -904,15 +915,17 @@ function App(){
     if(!form.beneficiario||!form.importo)return;
     const id=Date.now();
     const fd=fileDataRef.current;
-    const newExp={...form,id,docType:fd?.mediaType||null,hasDoc:!!fd};
-    if(fd&&fd.dataUrl){
+    const groupId=fd?.sharedDocGroupId||null;
+    const newExp={...form,id,docType:fd?.mediaType||null,hasDoc:!!fd,sharedDocId:groupId||null};
+    // Salva immagine: se batch con immagine condivisa è già in LS, altrimenti salva individuale
+    if(!groupId&&fd&&fd.dataUrl){
       const imgData=JSON.stringify({dataUrl:fd.dataUrl,mediaType:fd.mediaType||"image/jpeg",isPdf:false});
       try{LS.set(imgKey(id),imgData);}
       catch{
         Object.keys(localStorage).filter(k=>k.startsWith("sf:img:")).forEach(k=>localStorage.removeItem(k));
         try{LS.set(imgKey(id),imgData);}catch{showToast("Spazio esaurito: doc non salvato","err");}
       }
-    }else if(fd&&fd.isPdf&&fd.base64){
+    }else if(!groupId&&fd&&fd.isPdf&&fd.base64){
       const imgData=JSON.stringify({dataUrl:null,base64:fd.base64,mediaType:"application/pdf",isPdf:true});
       try{LS.set(imgKey(id),imgData);}catch{}
     }
@@ -1092,7 +1105,7 @@ function App(){
             <div>
               <h1 style={{fontFamily:"'Cormorant Garamond',serif",fontWeight:600,fontSize:20,
                 color:C.text,letterSpacing:"-0.02em",lineHeight:1}}>SpeseFiscali</h1>
-              <div style={{fontSize:10,color:C.muted,fontFamily:"'DM Mono',monospace",marginTop:3,lineHeight:1.6}}>per dichiarazione redditi<br/>build 20/03_Ver 6</div>
+              <div style={{fontSize:10,color:C.muted,fontFamily:"'DM Mono',monospace",marginTop:3,lineHeight:1.6}}>per dichiarazione redditi<br/>build 20/03_Ver 7</div>
             </div>
           </div>
           <button onClick={()=>{setPage("impostazioni");setDetail(null);}}
@@ -1365,11 +1378,16 @@ function DetailView({expense,onBack,onDelete,onEdit}){
     if(!expense?.hasDoc)return;
     // 1. Prova chiave individuale in localStorage
     try{const r=LS.get(imgKey(expense.id));if(r?.value){setDoc(JSON.parse(r.value));return;}}catch{}
+    if(expense.sharedDocId){
+      try{const r=LS.get(sharedImgKey(expense.sharedDocId));if(r?.value){setDoc(JSON.parse(r.value));return;}}catch{}
+      setLoadingDoc(true);
+      cfService.loadDocument("group_"+expense.sharedDocId)
+        .then(d=>{if(d)setDoc(d);}).catch(()=>{}).finally(()=>setLoadingDoc(false));
+      return;
+    }
     setLoadingDoc(true);
     cfService.loadDocument(expense.id)
-      .then(d=>{if(d)setDoc(d);})
-      .catch(()=>{})
-      .finally(()=>setLoadingDoc(false));
+      .then(d=>{if(d)setDoc(d);}).catch(()=>{}).finally(()=>setLoadingDoc(false));
   },[expense?.id]);
   if(!expense)return null;
   const downloadDoc=()=>{
