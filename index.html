@@ -6,7 +6,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes"/>
 <meta name="apple-mobile-web-app-status-bar-style" content="default"/>
 <meta name="theme-color" content="#F5F1EA"/>
-<title>SpeseFiscali — build 20/03_Ver 9</title>
+<title>SpeseFiscali — build 20/03_Ver 11</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;1,400&family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet"/>
@@ -947,7 +947,29 @@ function App(){
     if(!form.beneficiario||!form.importo)return;
     const suspects=findDuplicates(form,expensesRef.current);
     if(suspects.length>0){
-      setDuplicateWarning({suspects,onConfirm:()=>{setDuplicateWarning(null);doSave();},onCancel:()=>setDuplicateWarning(null)});
+      const isBatch=batchQueueRef.current.length>1;
+      setDuplicateWarning({
+        suspects,
+        // Rivedi: chiude il modale, rimani nel form
+        onCancel:()=>setDuplicateWarning(null),
+        // Salva comunque: aggiunge senza toccare i vecchi
+        onConfirm:()=>{setDuplicateWarning(null);doSave();},
+        // Scarta: salta questa spesa, avanza nel batch senza salvare
+        onDiscard:()=>{
+          setDuplicateWarning(null);
+          if(isBatch){showToast("Spesa scartata");batchNext();}
+          else{setStep("idle");setFileDataSync(null);setForm({});}
+        },
+        // Sovrascrivi: elimina il vecchio, salva il nuovo (solo se duplicato unico)
+        onOverwrite:()=>{
+          setDuplicateWarning(null);
+          const toReplace=suspects[0];
+          const without=expensesRef.current.filter(e=>e.id!==toReplace.id);
+          setExpensesSync(without);
+          LS.del(imgKey(toReplace.id));
+          doSave();
+        },
+      });
       return;
     }
     await doSave();
@@ -1078,17 +1100,25 @@ function App(){
                 </div>
               ))}
             </div>
-            <p style={{fontSize:12,color:C.muted,marginBottom:16,lineHeight:1.5}}>
-              Vuoi salvare comunque o annullare?
-            </p>
-            <button className="btn-primary" style={{...s.btn(),marginBottom:8,
-              background:C.danger,boxShadow:`0 4px 14px rgba(185,28,28,.25)`}}
-              onClick={duplicateWarning.onConfirm}>
-              Salva comunque
-            </button>
-            <button className="btn-ghost" style={s.btn("ghost")} onClick={duplicateWarning.onCancel}>
-              Annulla — rivedi la spesa
-            </button>
+            <div style={{display:"flex",flexDirection:"column",gap:8}}>
+              <button className="btn-ghost" style={s.btn("ghost")} onClick={duplicateWarning.onCancel}>
+                ✏️ Rivedi la spesa
+              </button>
+              <button className="btn-ghost" style={{...s.btn("ghost"),color:C.danger,border:"1px solid "+C.danger+"40"}}
+                onClick={duplicateWarning.onDiscard}>
+                🗑 Scarta{batchQueueRef.current.length>1?" e continua":""}
+              </button>
+              {duplicateWarning.suspects.length===1&&<button className="btn-ghost"
+                style={{...s.btn("ghost"),color:C.info,border:"1px solid "+C.info+"40"}}
+                onClick={duplicateWarning.onOverwrite}>
+                🔄 Sovrascrivi la precedente
+              </button>}
+              <button className="btn-primary" style={{...s.btn(),background:C.danger,
+                boxShadow:"0 4px 14px rgba(185,28,28,.25)"}}
+                onClick={duplicateWarning.onConfirm}>
+                Salva comunque (tieni entrambe)
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -1102,7 +1132,7 @@ function App(){
             <div>
               <h1 style={{fontFamily:"'Cormorant Garamond',serif",fontWeight:600,fontSize:20,
                 color:C.text,letterSpacing:"-0.02em",lineHeight:1}}>SpeseFiscali</h1>
-              <div style={{fontSize:10,color:C.muted,fontFamily:"'DM Mono',monospace",marginTop:3,lineHeight:1.6}}>per dichiarazione redditi<br/>build 20/03_Ver 9</div>
+              <div style={{fontSize:10,color:C.muted,fontFamily:"'DM Mono',monospace",marginTop:3,lineHeight:1.6}}>per dichiarazione redditi<br/>build 20/03_Ver 11</div>
             </div>
           </div>
           <button onClick={()=>{setPage("impostazioni");setDetail(null);}}
@@ -1471,6 +1501,36 @@ function DetailView({expense,onBack,onDelete,onEdit}){
   );
 }
 
+/* ── SKIP CONFIRM ── */
+function SkipConfirm({onSkip}){
+  const[confirm,setConfirm]=useState(false);
+  if(!confirm)return(
+    <button onClick={()=>setConfirm(true)}
+      style={{background:"none",border:"1px solid "+C.green+"40",borderRadius:8,
+        padding:"4px 10px",cursor:"pointer",fontSize:11,color:C.greenMid,fontWeight:"500",
+        fontFamily:"'DM Sans',sans-serif"}}>
+      Salta →
+    </button>
+  );
+  return(
+    <div style={{display:"flex",alignItems:"center",gap:4}}>
+      <span style={{fontSize:10,color:C.danger,fontWeight:"600"}}>Non salvata!</span>
+      <button onClick={onSkip}
+        style={{background:C.danger,border:"none",borderRadius:6,
+          padding:"4px 10px",cursor:"pointer",fontSize:11,color:"#fff",fontWeight:"600",
+          fontFamily:"'DM Sans',sans-serif"}}>
+        Sì, salta
+      </button>
+      <button onClick={()=>setConfirm(false)}
+        style={{background:"none",border:"1px solid "+C.border,borderRadius:6,
+          padding:"4px 8px",cursor:"pointer",fontSize:11,color:C.muted,
+          fontFamily:"'DM Sans',sans-serif"}}>
+        No
+      </button>
+    </div>
+  );
+}
+
 /* ── REVIEW FORM ── */
 function ReviewForm({form,setForm,fileData,payers,onSave,onCancel,onSkip,onBack,err,batchIndex,batchTotal,isEditing}){
   const upd=(k,v)=>setForm(f=>({...f,[k]:v}));
@@ -1504,12 +1564,7 @@ function ReviewForm({form,setForm,fileData,payers,onSave,onCancel,onSkip,onBack,
                 fontFamily:"'DM Sans',sans-serif"}}>
               ← Indietro
             </button>}
-            {onSkip&&<button onClick={onSkip}
-              style={{background:"none",border:`1px solid ${C.green}40`,borderRadius:8,
-                padding:"4px 10px",cursor:"pointer",fontSize:11,color:C.greenMid,fontWeight:"500",
-                fontFamily:"'DM Sans',sans-serif"}}>
-              Avanti →
-            </button>}
+            {onSkip&&<SkipConfirm onSkip={onSkip}/>}
           </div>
         </div>
       </div>}
