@@ -6,7 +6,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes"/>
 <meta name="apple-mobile-web-app-status-bar-style" content="default"/>
 <meta name="theme-color" content="#F5F1EA"/>
-<title>SpeseFiscali — build 20/03_Ver 8</title>
+<title>SpeseFiscali — build 20/03_Ver 9</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;1,400&family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet"/>
@@ -446,7 +446,8 @@ function exportExcel(expenses,year){
     "Pagamento":e.metodo_pagamento?pmLabel(e.metodo_pagamento):"—",
     "Tracciabile":e.metodo_pagamento?(pmTracciabile(e.metodo_pagamento)?"Sì":"No"):"—",
     "Tipo doc.":e.docType==="application/pdf"?"PDF":e.hasDoc?"Immagine":"—",
-    "Importo €":Number(e.importo)
+    "Importo €":Number(e.importo),
+    "Quota detraibile €":e.importo_detraibile&&Number(e.importo_detraibile)>0?Number(e.importo_detraibile):""
   }));
   const summary=CATS.map(c=>({
     "Categoria":catLabel(c.id),
@@ -720,14 +721,11 @@ function App(){
     }
     const cfUpper=(r.cf_trovato||"").toUpperCase().trim();
     const cfMatch=CF_MAP[cfUpper]||null;
-    // Usa importo_detraibile se esplicitamente indicato nel documento, altrimenti importo totale
-    const importoFinale=(r.importo_detraibile&&Number(r.importo_detraibile)>0)
-      ?r.importo_detraibile
-      :r.importo;
+    const hasDetraibile=r.importo_detraibile&&Number(r.importo_detraibile)>0;
     return{
       beneficiario:r.beneficiario||"",
-      importo:importoFinale??"",
-      importo_totale:(r.importo_detraibile&&Number(r.importo_detraibile)>0)?r.importo:null,
+      importo:r.importo??"",
+      importo_detraibile:hasDetraibile?String(r.importo_detraibile):"",
       data:r.data||new Date().toISOString().slice(0,10),
       descrizione:r.descrizione||"",categoria,sottocategoria,
       metodo_pagamento:r.metodo_pagamento||null,
@@ -1104,7 +1102,7 @@ function App(){
             <div>
               <h1 style={{fontFamily:"'Cormorant Garamond',serif",fontWeight:600,fontSize:20,
                 color:C.text,letterSpacing:"-0.02em",lineHeight:1}}>SpeseFiscali</h1>
-              <div style={{fontSize:10,color:C.muted,fontFamily:"'DM Mono',monospace",marginTop:3,lineHeight:1.6}}>per dichiarazione redditi<br/>build 20/03_Ver 8</div>
+              <div style={{fontSize:10,color:C.muted,fontFamily:"'DM Mono',monospace",marginTop:3,lineHeight:1.6}}>per dichiarazione redditi<br/>build 20/03_Ver 9</div>
             </div>
           </div>
           <button onClick={()=>{setPage("impostazioni");setDetail(null);}}
@@ -1450,7 +1448,9 @@ function DetailView({expense,onBack,onDelete,onEdit}){
                 {pmTracciabile(expense.metodo_pagamento)?"💳":"💵"} {pmLabel(expense.metodo_pagamento)}
               </span>
             :"—"],
-          ...(expense.importo_totale?[["Totale pagato",<span style={{color:C.muted}}>{fmt(expense.importo_totale)}</span>],[<span style={{color:C.gold}}>Quota detraibile</span>,<span style={{color:C.gold,fontWeight:"600"}}>{fmt(expense.importo)}</span>]]:[]),
+          ...(expense.importo_detraibile&&Number(expense.importo_detraibile)>0
+            ?[["Quota detraibile",<span style={{color:C.gold,fontWeight:"600"}}>{fmt(expense.importo_detraibile)}<span style={{color:C.muted,fontWeight:"400",fontSize:10}}> su {fmt(expense.importo)}</span></span>]]
+            :[]),
           ["Descrizione",expense.descrizione||"—"]].map(([k,v])=>(
           <div key={k} style={{display:"flex",justifyContent:"space-between",
             padding:"10px 0",borderTop:`1px solid ${C.border}`,alignItems:"flex-start"}}>
@@ -1527,11 +1527,11 @@ function ReviewForm({form,setForm,fileData,payers,onSave,onCancel,onSkip,onBack,
         <span style={{fontSize:16}}>✏️</span>
         <span>Stai modificando una spesa esistente</span>
       </div>}
-      {form.importo_totale&&<div style={{background:C.goldLight,border:`1px solid ${C.gold}40`,
-        borderRadius:12,padding:"10px 14px",marginBottom:14,
+      {form.importo_detraibile&&Number(form.importo_detraibile)>0&&<div style={{background:C.goldLight,
+        border:"1px solid "+C.gold+"40",borderRadius:12,padding:"10px 14px",marginBottom:14,
         display:"flex",alignItems:"center",gap:8,fontSize:12,color:C.gold,fontWeight:"500"}}>
         <span style={{fontSize:16}}>💡</span>
-        <span>Importo totale <strong>{fmt(form.importo_totale)}</strong> — salvato solo il <strong>detraibile: {fmt(form.importo)}</strong></span>
+        <span>Quota detraibile rilevata: <strong>{fmt(form.importo_detraibile)}</strong> su <strong>{fmt(form.importo)}</strong> totali</span>
       </div>}
       {err&&<div style={{background:C.dangerLight,border:`1px solid ${C.danger}30`,
         borderRadius:12,padding:"12px 16px",marginBottom:14,fontSize:12,color:C.danger,fontWeight:"500"}}>
@@ -1567,6 +1567,25 @@ function ReviewForm({form,setForm,fileData,payers,onSave,onCancel,onSkip,onBack,
           <input style={s.input} type="date" value={form.data||""}
             onChange={e=>upd("data",e.target.value)}/>
         </div>
+      </div>
+      <div style={{marginBottom:12}}>
+        <label style={{...s.label,display:"flex",alignItems:"center",gap:6}}>
+          Quota detraibile (€)
+          {form.importo_detraibile&&Number(form.importo_detraibile)>0&&
+            <span style={{fontSize:9,background:C.gold,color:"#fff",borderRadius:4,
+              padding:"1px 5px",fontWeight:"600"}}>AI</span>}
+          <span style={{fontSize:9,color:C.muted,fontWeight:"400"}}>opzionale</span>
+        </label>
+        <input style={{...s.input,borderColor:form.importo_detraibile&&Number(form.importo_detraibile)>0?C.gold:C.border}}
+          type="number" step="0.01"
+          value={form.importo_detraibile||""} placeholder="se diversa dal totale"
+          onChange={e=>upd("importo_detraibile",e.target.value)}
+          onFocus={e=>e.target.style.borderColor=C.gold}
+          onBlur={e=>e.target.style.borderColor=form.importo_detraibile&&Number(form.importo_detraibile)>0?C.gold:C.border}/>
+        {form.importo_detraibile&&Number(form.importo_detraibile)>0&&<div style={{
+          fontSize:11,color:C.gold,marginTop:4,fontWeight:"500"}}>
+          Pagato {fmt(form.importo)} — detraibile {fmt(form.importo_detraibile)}
+        </div>}
       </div>
       <div style={{marginBottom:12}}>
         <label style={s.label}>Descrizione</label>
