@@ -6,7 +6,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes"/>
 <meta name="apple-mobile-web-app-status-bar-style" content="default"/>
 <meta name="theme-color" content="#F5F1EA"/>
-<title>SpeseFiscali — build 21/03_Ver 3</title>
+<title>SpeseFiscali — build 21/03_Ver 4</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%231A3A2A'/%3E%3Crect x='7' y='5' width='18' height='22' rx='2' fill='%23F5F1EA'/%3E%3Cpath d='M7 27 l2-2 2 2 2-2 2 2 2-2 2 2 2-2 2 2V5H7z' fill='%23F5F1EA'/%3E%3Crect x='10' y='10' width='8' height='1.5' rx='0.75' fill='%231A3A2A'/%3E%3Crect x='10' y='13.5' width='12' height='1.5' rx='0.75' fill='%231A3A2A'/%3E%3Crect x='10' y='17' width='10' height='1.5' rx='0.75' fill='%231A3A2A'/%3E%3Crect x='10' y='20.5' width='7' height='2' rx='1' fill='%239A7B3A'/%3E%3C/svg%3E"/>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
@@ -422,14 +422,19 @@ async function analyzeFile(base64,mediaType,apiKey){
       "anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
     body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:800,messages:[{role:"user",content:[
       block,
-      {type:"text",text:`Analizza questa immagine italiana (ricevuta/scontrino/fattura).
-Se ci sono più scontrini/documenti visibili, estraili TUTTI come array.
-Cerca codici fiscali: MSNFBA79P07C573G=Fabio, PNTMSS82S50C573K=Melissa, MSNLSN09S04H294X=Alessandro, MSNLRD15H16H294Q=Leonardo.
+      {type:"text",text:`Analizza questo documento italiano (ricevuta/scontrino/fattura/modulo iscrizione).
 Rispondi SOLO con JSON valido, niente markdown. Formato array (anche se c'è un solo documento):
-[{"beneficiario":"nome esercente","importo":0.00,"importo_detraibile":null,"data":"YYYY-MM-DD","descrizione":"max 60 car","metodo_pagamento":"tracciabile|contanti|null","cf_trovato":"codice fiscale o null"}]
-REGOLA IMPORTO: se il documento indica esplicitamente una quota detraibile/rimborsabile (es. "quota detraibile", "importo detraibile", "di cui detraibile"), metti quell'importo in "importo_detraibile" e l'importo totale in "importo". Se non c'è quota esplicita, lascia "importo_detraibile" a null.
-Metodo: "tracciabile" se vedi POS/VISA/MASTERCARD/BANCOMAT/BONIFICO, "contanti" se CONTANTI/CASH, altrimenti null.
-Se un campo non è leggibile: null per stringhe, 0 per importo.`}
+[{"beneficiario":"nome esercente","importo":0.00,"importo_detraibile":null,"data":"YYYY-MM-DD","descrizione":"max 60 car","metodo_pagamento":"tracciabile|contanti|null","cf_trovato":"codice fiscale o null","tipo_rata":"unica|acconto|saldo|rata"}]
+
+REGOLA VOCI MULTIPLE — genera una voce separata per ciascuno di questi casi:
+1. Più scontrini/documenti visibili nella stessa immagine
+2. Pagamenti rateizzati con date diverse (acconto + saldo, rate mensili, ecc.) — anche se su un unico documento. Ogni rata ha la sua data e il suo importo.
+
+REGOLA IMPORTO: se il documento indica esplicitamente una quota detraibile (es. "quota detraibile", "di cui detraibile"), metti quell'importo in "importo_detraibile" e il totale in "importo". Altrimenti "importo_detraibile":null.
+REGOLA TIPO RATA: "unica" se pagamento in un'unica soluzione, "acconto" se è un anticipo/caparra, "saldo" se è il pagamento finale, "rata" se è una delle rate intermedie.
+REGOLA METODO: "tracciabile" se POS/VISA/MASTERCARD/BANCOMAT/BONIFICO, "contanti" se CONTANTI/CASH, altrimenti null.
+Cerca codici fiscali: MSNFBA79P07C573G=Fabio, PNTMSS82S50C573K=Melissa, MSNLSN09S04H294X=Alessandro, MSNLRD15H16H294Q=Leonardo.
+Se un campo non è leggibile: null per stringhe, 0 per importo, "unica" per tipo_rata.`}
     ]}]})
   });
   if(!res.ok){const e=await res.json();throw new Error(e.error?.message||"Errore API");}
@@ -448,7 +453,7 @@ Se un campo non è leggibile: null per stringhe, 0 per importo.`}
       return Array.isArray(parsed)?parsed:[parsed];
     }catch{
       console.warn("AI response non parsabile:",raw.slice(0,200));
-      return[{beneficiario:null,importo:0,data:null,descrizione:null,metodo_pagamento:null,cf_trovato:null}];
+      return[{beneficiario:null,importo:0,data:null,descrizione:null,metodo_pagamento:null,tipo_rata:"unica",cf_trovato:null}];
     }
   }
 }
@@ -807,6 +812,7 @@ function App(){
       descrizione:r.descrizione||"",categoria,sottocategoria,
       _learned:!!learned,
       metodo_pagamento:r.metodo_pagamento||null,
+      tipo_rata:r.tipo_rata||"unica",
       pagante:cfMatch?.type==="pagante"?cfMatch.name:PAYERS[0],
       riferimento:cfMatch?cfMatch.name:FAMILY[0],
       _cfRilevato:cfMatch?{name:cfMatch.name,type:cfMatch.type}:null,
@@ -1248,7 +1254,7 @@ function App(){
             <div>
               <h1 style={{fontFamily:"'Cormorant Garamond',serif",fontWeight:600,fontSize:20,
                 color:C.text,letterSpacing:"-0.02em",lineHeight:1}}>SpeseFiscali</h1>
-              <div style={{fontSize:10,color:C.muted,fontFamily:"'DM Mono',monospace",marginTop:3,lineHeight:1.6}}>per dichiarazione redditi<br/>build 21/03_Ver 3</div>
+              <div style={{fontSize:10,color:C.muted,fontFamily:"'DM Mono',monospace",marginTop:3,lineHeight:1.6}}>per dichiarazione redditi<br/>build 21/03_Ver 4</div>
             </div>
           </div>
           <button onClick={()=>{setPage("impostazioni");setDetail(null);}}
@@ -1473,6 +1479,12 @@ function App(){
                     </span>}
                     {e.hasDoc&&<span style={{marginLeft:5,color:C.gold}}>
                       {e.docType==="application/pdf"?"📄":"🖼"}</span>}
+                    {e.tipo_rata&&e.tipo_rata!=="unica"&&<span style={{
+                      marginLeft:5,fontSize:9,background:C.infoLight,color:C.info,
+                      borderRadius:4,padding:"1px 5px",fontWeight:"700",
+                      textTransform:"uppercase",letterSpacing:"0.05em"}}>
+                      {e.tipo_rata}
+                    </span>}
                   </div>
                 </div>
                 <div style={{textAlign:"right",flexShrink:0}}>
@@ -1623,6 +1635,9 @@ function DetailView({expense,onBack,onDelete,onEdit}){
             :"—"],
           ...(expense.importo_detraibile&&Number(expense.importo_detraibile)>0
             ?[["Quota detraibile",<span style={{color:C.gold,fontWeight:"600"}}>{fmt(expense.importo_detraibile)}<span style={{color:C.muted,fontWeight:"400",fontSize:10}}> su {fmt(expense.importo)}</span></span>]]
+            :[]),
+          ...(expense.tipo_rata&&expense.tipo_rata!=="unica"
+            ?[["Tipo pagamento",<span style={{color:C.info,fontWeight:"600",textTransform:"capitalize"}}>{expense.tipo_rata}</span>]]
             :[]),
           ["Descrizione",expense.descrizione||"—"]].map(([k,v])=>(
           <div key={k} style={{display:"flex",justifyContent:"space-between",
@@ -1871,6 +1886,33 @@ function ReviewForm({form,setForm,fileData,payers,onSave,onCancel,onSkip,onBack,
             ⚠️ Pagamento in contanti — potrebbe non essere detraibile
           </div>
         )}
+      </div>
+
+      <div style={{marginBottom:20}}>
+        <label style={{...s.label,display:"flex",alignItems:"center",gap:6}}>
+          Tipo pagamento
+          {form.tipo_rata&&form.tipo_rata!=="unica"&&
+            <span style={{fontSize:9,background:C.info,color:"#fff",borderRadius:4,
+              padding:"1px 5px",fontWeight:"600"}}>AI</span>}
+        </label>
+        <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+          {[{id:"unica",label:"Unica soluzione"},{id:"acconto",label:"Acconto"},{id:"saldo",label:"Saldo"},{id:"rata",label:"Rata"}].map(t=>{
+            const active=form.tipo_rata===t.id;
+            return<button key={t.id} style={{padding:"9px 14px",cursor:"pointer",
+              border:"1.5px solid "+(active?C.info:C.border),borderRadius:12,
+              background:active?C.infoLight:C.card,color:active?C.info:C.muted,
+              fontFamily:"'DM Sans',sans-serif",fontSize:13,
+              fontWeight:active?"600":"400",transition:"all .18s"}}
+              onClick={()=>upd("tipo_rata",t.id)}>{t.label}</button>;
+          })}
+        </div>
+        {form.tipo_rata&&form.tipo_rata!=="unica"&&<div style={{marginTop:8,padding:"8px 12px",
+          borderRadius:10,background:C.infoLight,border:"1px solid "+C.info+"30",
+          fontSize:11,color:C.info,fontWeight:"500"}}>
+          {form.tipo_rata==="acconto"?"Acconto — verrà inserito nell'anno fiscale della data indicata":
+           form.tipo_rata==="saldo"?"Saldo — verrà inserito nell'anno fiscale della data indicata":
+           "Rata — verrà inserita nell'anno fiscale della data indicata"}
+        </div>}
       </div>
 
       <button className="btn-primary" style={{...s.btn(),opacity:valid?1:.4,
