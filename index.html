@@ -6,7 +6,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes"/>
 <meta name="apple-mobile-web-app-status-bar-style" content="default"/>
 <meta name="theme-color" content="#F5F1EA"/>
-<title>SpeseFiscali — build 21/03_Ver 6</title>
+<title>SpeseFiscali — build 21/03_Ver 7</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%231A3A2A'/%3E%3Crect x='7' y='5' width='18' height='22' rx='2' fill='%23F5F1EA'/%3E%3Cpath d='M7 27 l2-2 2 2 2-2 2 2 2-2 2 2 2-2 2 2V5H7z' fill='%23F5F1EA'/%3E%3Crect x='10' y='10' width='8' height='1.5' rx='0.75' fill='%231A3A2A'/%3E%3Crect x='10' y='13.5' width='12' height='1.5' rx='0.75' fill='%231A3A2A'/%3E%3Crect x='10' y='17' width='10' height='1.5' rx='0.75' fill='%231A3A2A'/%3E%3Crect x='10' y='20.5' width='7' height='2' rx='1' fill='%239A7B3A'/%3E%3C/svg%3E"/>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
@@ -354,7 +354,7 @@ const RULES=[
   // SALUTE — ticket / ASL / SSN
   {pat:/ticket\b|asl\b|azienda\s*sanitaria|ssn\b|pronto\s*soccorso|guardia\s*medica|ospedale|policlinico|presidio\s*ospedaliero/i, cat:"salute",sub:"ticket_ssn"},
   // SALUTE — ottica
-  {pat:/ottic[ao]\b|occhiali|lenti\s*(a\s*contatto)?|centro\s*ottico|visione\b/i,                cat:"salute",sub:"occhiali"},
+  {pat:/ottic[ao]\b|occhiali|lenti\s*(a\s*contatto)?|centro\s*ottico|centro\s*visione|test\s*visivo/i, cat:"salute",sub:"occhiali"},
   // SALUTE — dispositivi ortopedici
   {pat:/ortopedi|protesi\b|ausilio|plantare|dispositivo\s*medic|apparecchio\s*acustico|sedia\s*rotelle|stampell/i, cat:"salute",sub:"dispositivi"},
   // SALUTE — dentista
@@ -374,7 +374,7 @@ const RULES=[
   // ISTRUZIONE — tasse scolastiche
   {pat:/scuola|liceo|istituto\s*(scolast|comprensiv|tecnico|profes|istruz)|asilo\b|materna\b|elementar|media\s+(inferiore|superiore)|collegio\b|convitto|accademia\b/i, cat:"istruzione",sub:"tasse_scolastiche"},
   // ISTRUZIONE — sport
-  {pat:/palestra|piscina|sport\b|calcio\b|tennis\b|danza\b|nuoto\b|basket\b|volley|rugby|judo|karate|atletica|sci\b|yoga\b|pilates|fitness|centro\s*sport|asd\b|ssd\b|polisport/i, cat:"istruzione",sub:"sport"},
+  {pat:/palestra|piscina|sport\b|calcio\b|tennis\b|danza\b|nuoto\b|basket\b|volley|rugby|judo|karate|atletica|sci\b|yoga\b|pilates|fitness|centro\s*sport|asd\b|ssd\b|polisport|ginnastica|equitazione|scherma|ciclismo|tiro\s*(con\s*arco|a\s*segno)|scf\b|societ\S*\s*sportiva/i, cat:"istruzione",sub:"sport"},
   // ISTRUZIONE — libri e materiale didattico
   {pat:/libreria|cartoleri|libro\b|libri\b|testo\s*scolastic|dispense|materiale\s*didattico|mondadori\s*store|feltrinelli|hoepli\b/i, cat:"istruzione",sub:"libri"},
   // CASA — affitto
@@ -420,7 +420,7 @@ async function analyzeFile(base64,mediaType,apiKey){
     method:"POST",
     headers:{"Content-Type":"application/json","x-api-key":apiKey,
       "anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
-    body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:800,messages:[{role:"user",content:[
+    body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:1024,messages:[{role:"user",content:[
       block,
       {type:"text",text:`Analizza questo documento italiano (ricevuta/scontrino/fattura/modulo iscrizione/certificato).
 Rispondi SOLO con JSON valido, niente markdown. Formato array (anche se c'è un solo documento):
@@ -798,7 +798,7 @@ function App(){
       if(cls.confidence==="low"){
         // 3. Haiku solo come ultimo fallback
         const aiCls=await classifyWithAI(r.beneficiario||"",r.descrizione||"",apiKey);
-        categoria=aiCls.categoria||"salute";
+        categoria=aiCls.categoria||null; // null se Haiku non trova nulla — non apprendere il default
         sottocategoria=aiCls.sottocategoria||null;
       }
     }
@@ -810,7 +810,7 @@ function App(){
       importo:r.importo??"",
       importo_detraibile:hasDetraibile?String(r.importo_detraibile):"",
       data:r.data||new Date().toISOString().slice(0,10),
-      descrizione:r.descrizione||"",categoria,sottocategoria,
+      descrizione:r.descrizione||"",categoria:categoria||"salute",sottocategoria,
       _learned:!!learned,
       metodo_pagamento:r.metodo_pagamento||null,
       tipo_rata:r.tipo_rata||"unica",
@@ -1026,7 +1026,7 @@ function App(){
     }
     const isBatch=batchQueueRef.current.length>1;
     // Aggiorna mappa apprendimento con la categoria confermata
-    learnVendor(newExp.beneficiario,newExp.categoria,newExp.sottocategoria);
+    if(newExp.categoria)learnVendor(newExp.beneficiario,newExp.categoria,newExp.sottocategoria);
     if(isBatch){
       batchAccumulator.current.push(newExp);
       showToast("Spesa "+(batchIndexRef.current+1)+"/"+batchQueueRef.current.length+" salvata");
@@ -1262,7 +1262,7 @@ function App(){
             <div>
               <h1 style={{fontFamily:"'Cormorant Garamond',serif",fontWeight:600,fontSize:20,
                 color:C.text,letterSpacing:"-0.02em",lineHeight:1}}>SpeseFiscali</h1>
-              <div style={{fontSize:10,color:C.muted,fontFamily:"'DM Mono',monospace",marginTop:3,lineHeight:1.6}}>per dichiarazione redditi<br/>build 21/03_Ver 6</div>
+              <div style={{fontSize:10,color:C.muted,fontFamily:"'DM Mono',monospace",marginTop:3,lineHeight:1.6}}>per dichiarazione redditi<br/>build 21/03_Ver 7</div>
             </div>
           </div>
           <button onClick={()=>{setPage("impostazioni");setDetail(null);}}
