@@ -6,7 +6,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes"/>
 <meta name="apple-mobile-web-app-status-bar-style" content="default"/>
 <meta name="theme-color" content="#F5F1EA"/>
-<title>SpeseFiscali — build 21/03_Ver 1</title>
+<title>SpeseFiscali — build 21/03_Ver 2</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%231A3A2A'/%3E%3Crect x='7' y='5' width='18' height='22' rx='2' fill='%23F5F1EA'/%3E%3Cpath d='M7 27 l2-2 2 2 2-2 2 2 2-2 2 2 2-2 2 2V5H7z' fill='%23F5F1EA'/%3E%3Crect x='10' y='10' width='8' height='1.5' rx='0.75' fill='%231A3A2A'/%3E%3Crect x='10' y='13.5' width='12' height='1.5' rx='0.75' fill='%231A3A2A'/%3E%3Crect x='10' y='17' width='10' height='1.5' rx='0.75' fill='%231A3A2A'/%3E%3Crect x='10' y='20.5' width='7' height='2' rx='1' fill='%239A7B3A'/%3E%3C/svg%3E"/>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
@@ -630,6 +630,7 @@ function App(){
   const[filterCat,setFilterCat]=useState("all");
   const[filterPayer,setFilterPayer]=useState("all");
   const[filterRef,setFilterRef]=useState("all");
+  const[searchQuery,setSearchQuery]=useState("");
   const fileRef=useRef();
   const batchRef=useRef();
   const payers=PAYERS;
@@ -1146,7 +1147,22 @@ function App(){
   const years=[...new Set(expenses.map(e=>e.data?.slice(0,4)))].filter(Boolean).sort().reverse();
   const filtered=expenses.filter(e=>{
     const y=e.data?.slice(0,4)||curYear;
-    return(filterYear==="all"||y===filterYear)&&(filterCat==="all"||e.categoria===filterCat)&&(filterPayer==="all"||e.pagante===filterPayer)&&(filterRef==="all"||e.riferimento===filterRef);
+    if(filterYear!=="all"&&y!==filterYear)return false;
+    if(filterCat!=="all"&&e.categoria!==filterCat)return false;
+    if(filterPayer!=="all"&&e.pagante!==filterPayer)return false;
+    if(filterRef!=="all"&&e.riferimento!==filterRef)return false;
+    if(searchQuery.trim()){
+      const q=searchQuery.trim().toLowerCase();
+      // Normalizza importo: sostituisce , con . per confronto
+      const qNorm=q.replace(",",".");
+      const impStr=String(e.importo||"").replace(",",".");
+      const textMatch=(e.beneficiario||"").toLowerCase().includes(q)||
+        (e.descrizione||"").toLowerCase().includes(q);
+      const importoMatch=impStr.includes(qNorm)||
+        (String(Number(e.importo)||0)).includes(qNorm);
+      if(!textMatch&&!importoMatch)return false;
+    }
+    return true;
   });
   const total=filtered.reduce((s,e)=>s+Number(e.importo),0);
   const totalYear=expenses.filter(e=>e.data?.startsWith(curYear)).reduce((s,e)=>s+Number(e.importo),0);
@@ -1232,7 +1248,7 @@ function App(){
             <div>
               <h1 style={{fontFamily:"'Cormorant Garamond',serif",fontWeight:600,fontSize:20,
                 color:C.text,letterSpacing:"-0.02em",lineHeight:1}}>SpeseFiscali</h1>
-              <div style={{fontSize:10,color:C.muted,fontFamily:"'DM Mono',monospace",marginTop:3,lineHeight:1.6}}>per dichiarazione redditi<br/>build 21/03_Ver 1</div>
+              <div style={{fontSize:10,color:C.muted,fontFamily:"'DM Mono',monospace",marginTop:3,lineHeight:1.6}}>per dichiarazione redditi<br/>build 21/03_Ver 2</div>
             </div>
           </div>
           <button onClick={()=>{setPage("impostazioni");setDetail(null);}}
@@ -1344,6 +1360,20 @@ function App(){
 
         {/* ARCHIVIO */}
         {page==="archivio"&&!detail&&<>
+          {/* Barra di ricerca */}
+          <div style={{position:"relative",marginBottom:14}}>
+            <span style={{position:"absolute",left:14,top:"50%",transform:"translateY(-50%)",
+              fontSize:16,pointerEvents:"none"}}>🔍</span>
+            <input style={{...s.input,paddingLeft:42,paddingRight:searchQuery?40:14}}
+              value={searchQuery} placeholder="Cerca per negozio, importo..."
+              onChange={e=>setSearchQuery(e.target.value)}
+              onFocus={e=>e.target.style.borderColor=C.green}
+              onBlur={e=>e.target.style.borderColor=C.border}/>
+            {searchQuery&&<button onClick={()=>setSearchQuery("")}
+              style={{position:"absolute",right:12,top:"50%",transform:"translateY(-50%)",
+                background:"none",border:"none",cursor:"pointer",fontSize:16,
+                color:C.muted,lineHeight:1}}>✕</button>}
+          </div>
           {/* Filters */}
           <div style={{marginBottom:12}}>
             <p style={s.label}>Anno</p>
@@ -1604,8 +1634,8 @@ function DetailView({expense,onBack,onDelete,onEdit}){
         ))}
       </div>
 
-      <button className="btn-primary" style={{...s.btn("secondary"),marginBottom:8}}
-        onClick={()=>onEdit(expense)}>✏️ &nbsp;Modifica spesa</button>
+      {onEdit&&<button className="btn-primary" style={{...s.btn("secondary"),marginBottom:8}}
+        onClick={()=>onEdit(expense)}>✏️ &nbsp;Modifica spesa</button>}
       {doc&&<button className="btn-ghost" style={{...s.btn("ghost"),marginBottom:8}}
         onClick={downloadDoc}>⬇️ &nbsp;Scarica {doc.isPdf?"PDF":"immagine"}</button>}
       <button className="btn-ghost" style={{...s.btn("danger"),marginTop:4}}
@@ -1860,9 +1890,11 @@ function ExportPage({expenses,cfConfigured,cfSyncing,onDelete}){
   const curYear=new Date().getFullYear().toString();
   const years=[...new Set(expenses.map(e=>e.data?.slice(0,4)).filter(Boolean))].sort().reverse();
   const[year,setYear]=useState(years[0]||curYear);
-  const[confirmDel,setConfirmDel]=useState(null); // id spesa da eliminare
+  const[confirmDel,setConfirmDel]=useState(null);
+  const[previewId,setPreviewId]=useState(null);
   const byYear=expenses.filter(e=>e.data?.startsWith(year));
   const total=byYear.reduce((s,e)=>s+Number(e.importo),0);
+  const previewExp=previewId?expenses.find(e=>e.id===previewId):null;
 
   // Categorie intere mancanti (veterinaria, erogazioni e quelle senza sottocategorie)
   const missingCats=CATS.filter(c=>!subcatList(c.id).length&&!byYear.some(e=>e.categoria===c.id));
@@ -1972,12 +2004,19 @@ function ExportPage({expenses,cfConfigured,cfSyncing,onDelete}){
                           No
                         </button>
                       </div>
-                      :<button onClick={()=>setConfirmDel(e.id)}
-                        style={{background:"none",border:"1px solid "+C.danger+"50",borderRadius:6,
-                          padding:"5px 10px",cursor:"pointer",fontSize:11,
-                          color:C.danger,fontWeight:"600",marginLeft:8,flexShrink:0}}>
-                        🗑 Elimina
-                      </button>
+                      :<div style={{display:"flex",gap:4,marginLeft:8,flexShrink:0}}>
+                        <button onClick={()=>setPreviewId(e.id)}
+                          style={{background:"none",border:"1px solid "+C.border,borderRadius:6,
+                            padding:"5px 8px",cursor:"pointer",fontSize:13}}>
+                          👁
+                        </button>
+                        <button onClick={()=>setConfirmDel(e.id)}
+                          style={{background:"none",border:"1px solid "+C.danger+"50",borderRadius:6,
+                            padding:"5px 10px",cursor:"pointer",fontSize:11,
+                            color:C.danger,fontWeight:"600"}}>
+                          🗑
+                        </button>
+                      </div>
                     }
                   </div>
                 ))}
@@ -2046,6 +2085,26 @@ function ExportPage({expenses,cfConfigured,cfSyncing,onDelete}){
         onClick={byYear.length?()=>exportPDF(byYear,year):undefined}>
         🖨️ &nbsp;Genera PDF archivio
       </button>
+
+      {/* Modale preview spesa */}
+      {previewExp&&<div style={{position:"fixed",inset:0,background:"rgba(28,25,23,.7)",
+        zIndex:600,display:"flex",alignItems:"flex-end",justifyContent:"center",
+        backdropFilter:"blur(4px)"}} onClick={()=>setPreviewId(null)}>
+        <div style={{background:C.bg,borderRadius:"24px 24px 0 0",width:"100%",maxWidth:430,
+          maxHeight:"85vh",overflowY:"auto",padding:"20px 20px 36px",
+          boxShadow:"0 -8px 40px rgba(0,0,0,.2)",animation:"fadeUp .25s ease"}}
+          onClick={e=>e.stopPropagation()}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+            <p style={{...s.label,margin:0}}>Dettaglio spesa</p>
+            <button onClick={()=>setPreviewId(null)}
+              style={{background:"none",border:"none",fontSize:20,cursor:"pointer",color:C.muted}}>✕</button>
+          </div>
+          <DetailView expense={previewExp}
+            onBack={()=>setPreviewId(null)}
+            onDelete={(id)=>{onDelete(id);setPreviewId(null);}}
+            onEdit={null}/>
+        </div>
+      </div>}
     </>
   );
 }
