@@ -6,7 +6,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes"/>
 <meta name="apple-mobile-web-app-status-bar-style" content="default"/>
 <meta name="theme-color" content="#F5F1EA"/>
-<title>SpeseFiscali — build 21/03_Ver 7</title>
+<title>SpeseFiscali — build 21/03_Ver 8</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%231A3A2A'/%3E%3Crect x='7' y='5' width='18' height='22' rx='2' fill='%23F5F1EA'/%3E%3Cpath d='M7 27 l2-2 2 2 2-2 2 2 2-2 2 2 2-2 2 2V5H7z' fill='%23F5F1EA'/%3E%3Crect x='10' y='10' width='8' height='1.5' rx='0.75' fill='%231A3A2A'/%3E%3Crect x='10' y='13.5' width='12' height='1.5' rx='0.75' fill='%231A3A2A'/%3E%3Crect x='10' y='17' width='10' height='1.5' rx='0.75' fill='%231A3A2A'/%3E%3Crect x='10' y='20.5' width='7' height='2' rx='1' fill='%239A7B3A'/%3E%3C/svg%3E"/>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
@@ -512,8 +512,8 @@ function exportPDF(expenses,year){
   const sections=CATS.map(c=>{
     if(!byCat[c.id].length)return"";
     const tot=byCat[c.id].reduce((s,e)=>s+Number(e.importo),0);
-    const rows=byCat[c.id].map(e=>`<tr><td>${fmtDate(e.data)}</td><td>${e.beneficiario||"—"}</td><td>${e.descrizione||"—"}</td><td>${e.pagante}</td><td>${e.riferimento||e.pagante}</td><td style="text-align:right;font-weight:600">${fmt(e.importo)}</td></tr>`).join("");
-    return`<div class="sec"><h3>${c.icon} ${c.label}</h3><table><thead><tr><th>Data</th><th>Beneficiario</th><th>Descrizione</th><th>Pagante</th><th>Per chi</th><th>Importo</th></tr></thead><tbody>${rows}</tbody><tfoot><tr><td colspan="5" style="text-align:right;font-weight:700">Totale</td><td style="text-align:right;font-weight:700">${fmt(tot)}</td></tr></tfoot></table></div>`;
+    const rows=byCat[c.id].map(e=>`<tr><td>${fmtDate(e.data)}</td><td>${e.beneficiario||"—"}</td><td>${e.descrizione||"—"}</td><td>${e.pagante}</td><td>${e.riferimento||e.pagante}</td><td>${e.metodo_pagamento?pmLabel(e.metodo_pagamento):"—"}</td><td style="text-align:right">${e.importo_detraibile&&Number(e.importo_detraibile)>0?fmt(e.importo_detraibile):"—"}</td><td style="text-align:right;font-weight:600">${fmt(e.importo)}</td></tr>`).join("");
+    return`<div class="sec"><h3>${c.icon} ${c.label}</h3><table><thead><tr><th>Data</th><th>Beneficiario</th><th>Descrizione</th><th>Pagante</th><th>Per chi</th><th>Pagamento</th><th style="text-align:right">Detraibile</th><th style="text-align:right">Importo</th></tr></thead><tbody>${rows}</tbody><tfoot><tr><td colspan="7" style="text-align:right;font-weight:700">Totale</td><td style="text-align:right;font-weight:700">${fmt(tot)}</td></tr></tfoot></table></div>`;
   }).join("");
   const html=`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Spese Fiscali ${year}</title><style>body{font-family:Georgia,serif;max-width:960px;margin:40px auto;color:#1a2a1e}h1{font-size:26px;border-bottom:2px solid #1a2a1e;padding-bottom:8px}h2{font-size:12px;color:#666;font-weight:normal;letter-spacing:.1em;text-transform:uppercase}h3{font-size:15px;margin:28px 0 6px}table{width:100%;border-collapse:collapse;font-size:12px}th{text-align:left;padding:6px 8px;background:#f0ead8;border-bottom:2px solid #1a2a1e;font-size:10px;letter-spacing:.08em;text-transform:uppercase}td{padding:6px 8px;border-bottom:1px solid #ddd}tfoot td{background:#f8f5ef;font-size:13px}.sec{page-break-inside:avoid}.summary{margin-top:40px;border-top:2px solid #1a2a1e;padding-top:20px}.total{font-size:18px;font-weight:700;text-align:right}@media print{body{margin:20px}}</style></head><body><h1>Archivio Spese Fiscali — ${year}</h1><h2>Famiglia: ${FAMILY.join(" · ")} · ${new Date().toLocaleDateString("it-IT")}</h2>${sections}<div class="summary"><h3>Riepilogo</h3><table><thead><tr><th>Categoria</th><th>N.</th><th style="text-align:right">Totale</th></tr></thead><tbody>${CATS.map(c=>`<tr><td>${c.icon} ${c.label}</td><td>${byCat[c.id].length}</td><td style="text-align:right">${fmt(byCat[c.id].reduce((s,e)=>s+Number(e.importo),0))}</td></tr>`).join("")}</tbody></table><p class="total">TOTALE: ${fmt(totale)}</p></div></body></html>`;
   const w=window.open("","_blank");w.document.write(html);w.document.close();setTimeout(()=>w.print(),600);
@@ -1262,7 +1262,7 @@ function App(){
             <div>
               <h1 style={{fontFamily:"'Cormorant Garamond',serif",fontWeight:600,fontSize:20,
                 color:C.text,letterSpacing:"-0.02em",lineHeight:1}}>SpeseFiscali</h1>
-              <div style={{fontSize:10,color:C.muted,fontFamily:"'DM Mono',monospace",marginTop:3,lineHeight:1.6}}>per dichiarazione redditi<br/>build 21/03_Ver 7</div>
+              <div style={{fontSize:10,color:C.muted,fontFamily:"'DM Mono',monospace",marginTop:3,lineHeight:1.6}}>per dichiarazione redditi<br/>build 21/03_Ver 8</div>
             </div>
           </div>
           <button onClick={()=>{setPage("impostazioni");setDetail(null);}}
